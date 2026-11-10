@@ -33,8 +33,11 @@ export const STREAMS = [
   },
 ];
 
-const MISSING_HINT = {
-  Magnetometer: 'off in Chrome by default: turn on chrome://flags/#enable-generic-sensor-extra-classes',
+// Chrome keeps the magnetometer behind its feature GenericSensorExtraClasses.
+// Up to about version 130 that had a switch on chrome://flags; newer versions
+// take it only from the command line. The README says how.
+const SWITCHED_OFF = {
+  Magnetometer: 'switched off in Chrome (README: Magnetometr); the compass still feeds the orientation',
 };
 
 const GEOLOCATION_PROBLEMS = {
@@ -50,9 +53,10 @@ const GEOLOCATION_PROBLEMS = {
 // the difference between the clocks; beyond this limit it is removed.
 const CLOCKS_AGREE_MS = 250;
 
-function sensorProblem(error) {
+function sensorProblem(error, source) {
   if (error?.name === 'NotAllowedError' || error?.name === 'SecurityError') return ['blocked', 'motion sensors are blocked for this site'];
-  if (error?.name === 'NotReadableError') return ['missing', 'this device has no such sensor'];
+  // Chrome answers the same way for a sensor it keeps switched off and for one the phone does not have.
+  if (error?.name === 'NotReadableError') return ['missing', SWITCHED_OFF[source] ?? 'this device has no such sensor'];
   return ['failed', error?.message || error?.name || 'unknown error'];
 }
 
@@ -129,14 +133,14 @@ export class PhoneSensors {
   #startSensor({ name, source, hz }) {
     const Sensor = this.#scope[source];
     if (typeof Sensor !== 'function') {
-      this.#set(name, 'missing', MISSING_HINT[source] ?? 'not offered by this browser');
+      this.#set(name, 'missing', SWITCHED_OFF[source] ?? 'not offered by this browser');
       return;
     }
     let sensor;
     try {
       sensor = new Sensor({ frequency: hz });
     } catch (error) {
-      this.#set(name, ...sensorProblem(error));
+      this.#set(name, ...sensorProblem(error, source));
       return;
     }
     sensor.addEventListener('reading', () => {
@@ -144,13 +148,13 @@ export class PhoneSensors {
       this.#onSample(name, [this.#toEpochMs(this.#pageTime(name, sensor.timestamp)), ...values]);
       this.#set(name, 'on');
     });
-    sensor.addEventListener('error', (event) => this.#set(name, ...sensorProblem(event.error)));
+    sensor.addEventListener('error', (event) => this.#set(name, ...sensorProblem(event.error, source)));
     this.#set(name, 'starting');
     try {
       sensor.start();
       this.#sensors.push(sensor);
     } catch (error) {
-      this.#set(name, ...sensorProblem(error));
+      this.#set(name, ...sensorProblem(error, source));
     }
   }
 

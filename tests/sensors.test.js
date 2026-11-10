@@ -158,8 +158,19 @@ test('a sensor the browser does not offer is reported as missing, the rest still
   const { sensors, made, state } = setup({ Magnetometer: undefined });
   sensors.start();
   assert.equal(state('magnetometer').state, 'missing');
-  assert.match(state('magnetometer').detail, /enable-generic-sensor-extra-classes/);
+  assert.match(state('magnetometer').detail, /switched off in Chrome/);
   assert.equal(made.Gyroscope[0].started, true);
+});
+
+test('a magnetometer that Chrome offers but refuses to start is not blamed on the phone', async () => {
+  // With experimental web features on, the class exists while the sensor itself stays switched off.
+  const refused = Object.assign(new Error('not available'), { name: 'NotReadableError' });
+  const { sensors, state } = setup({ Magnetometer: sensorClass([], { failOnStart: refused }), Gyroscope: sensorClass([], { failOnStart: refused }) });
+  sensors.start();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(state('magnetometer').detail, /switched off in Chrome/);
+  // The same answer for a gyroscope does mean the phone has none.
+  assert.equal(state('gyroscope').detail, 'this device has no such sensor');
 });
 
 test('a blocked sensor and a phone without the chip are told apart', async () => {

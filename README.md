@@ -123,13 +123,28 @@ Razem z danymi auta aplikacja zapisuje czujniki telefonu. Zapis startuje sam po 
 | `phone_drift` | to, co pokazywał widok Drift: kierunek nadwozia, kurs, kąt driftu | 10 Hz |
 
 - **Częstotliwość.** 60 Hz dla czujników ruchu i 10 Hz dla magnetometru to granice Chrome dla stron WWW, nie samych czujników. Więcej da tylko aplikacja natywna.
-- **Magnetometr** jest w Chrome domyślnie wyłączony. Włącza go flaga `chrome://flags/#enable-generic-sensor-extra-classes`. Bez niej kompas i tak jest użyty w `phone_orientation`.
+- **Magnetometr** jest w Chrome wyłączony i zwykle nie warto go włączać: kompas i tak jest użyty w `phone_orientation`. Jak go włączyć, opisuje rozdział niżej.
 - **GPS** wymaga zgody na lokalizację przy pierwszym uruchomieniu i włączonej lokalizacji w telefonie.
 - **Dwie prędkości.** Na ekranie obok prędkości z auta (koła) jest prędkość z GPS (względem ziemi). Różnica między nimi to poślizg kół.
 - **Osie** są osiami telefonu: x w prawo ekranu, y w górę ekranu, z od ekranu w stronę patrzącego. Telefon musi być sztywno zamocowany, inaczej dane ruchu opisują telefon, a nie auto.
 - **Czas.** Każdy plik ma w pierwszej kolumnie `timestamp_ms` z jednego zegara: zegar telefonu jest odczytywany raz na starcie zapisu, a dalej liczy zegar monotoniczny, więc dane auta i telefonu da się zestawić. `phone_gps` ma dodatkowo `fix_ms`, czyli czas pomiaru podany przez odbiornik.
 
 Stan każdego czujnika (częstotliwość, liczba próbek albo powód braku) pokazuje sekcja **Phone sensors**. Do loga dołączany jest plik `log_info` z opisem plików i kolumn.
+
+### Magnetometr
+
+Surowy magnetometr Chrome trzyma za funkcją `GenericSensorExtraClasses`, która jest domyślnie wyłączona. Do około wersji 130 miała przełącznik `chrome://flags/#enable-generic-sensor-extra-classes`; w nowszych wersjach (sprawdzone w źródłach 140, 150 i 156) tego przełącznika już nie ma i zostaje wiersz poleceń ustawiany z komputera:
+
+1. W Chrome na telefonie otwórz `chrome://flags/#enable-command-line-on-non-rooted-devices`, wybierz "Enabled" i uruchom Chrome ponownie.
+2. Podłącz telefon kablem (debugowanie USB włączone) i na komputerze wykonaj:
+
+   ```bash
+   adb shell "echo '_ --enable-features=GenericSensorExtraClasses' > /data/local/tmp/chrome-command-line"
+   ```
+
+3. W ustawieniach telefonu wymuś zatrzymanie Chrome i otwórz aplikację ponownie. W sekcji **Phone sensors** przy magnetometrze powinno pojawić się "10 Hz".
+
+Żeby to cofnąć, usuń plik: `adb shell rm /data/local/tmp/chrome-command-line`. Ta procedura wynika ze źródeł Chrome i nie była sprawdzana na telefonie. Sama flaga `enable-experimental-web-platform-features` nie wystarcza: pokazuje stronie klasę `Magnetometer`, ale czujnik dalej nie startuje.
 
 ## Widok Drift
 

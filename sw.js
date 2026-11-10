@@ -15,7 +15,7 @@
 // sites from other folders of the same origin. Only caches with this prefix
 // are ever removed here.
 const CACHE_PREFIX = 'drifthing-obd-';
-const CACHE = `${CACHE_PREFIX}v9`;
+const CACHE = `${CACHE_PREFIX}v10`;
 const NETWORK_TIMEOUT_MS = 2500;
 const ASSETS = [
   './',
@@ -31,6 +31,7 @@ const ASSETS = [
   'src/drift-replay.js',
   'src/drift.js',
   'src/elm327.js',
+  'src/engine.js',
   'src/geo.js',
   'src/map.js',
   'src/pids.js',
@@ -41,6 +42,7 @@ const ASSETS = [
   'src/sensors.js',
   'src/simulator.js',
   'src/storage.js',
+  'src/summary.js',
   'src/trace.js',
   'src/transports.js',
   'src/wheels.js',

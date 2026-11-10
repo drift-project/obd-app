@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { Recording } from '../src/replay.js';
-import { WHEEL_LAG_MS, wheelSlip } from '../src/wheels.js';
+import { WHEEL_LAG_MS, WheelWatch, wheelSlip } from '../src/wheels.js';
 
 const T0 = new Date(2026, 10, 10, 20, 0, 0).getTime();
 
@@ -133,4 +133,68 @@ test('a recording without the car or without GPS has nothing to compare', () => 
   const apart = wheelSlip(new Recording([car, table('gps', ['timestamp_ms', 'speed_ms'], [[T0 + 60000, 10]])]));
   assert.ok(rows(apart).every((row) => Number.isNaN(row.slip_pct)));
   assert.deepEqual(apart.spans, []);
+});
+
+// --- While driving --------------------------------------------------------------------
+
+/** Feeds a watch the way the app does: GPS speed once a second and the car's speed every `carEvery` seconds. */
+function watchDrive(watch, { seconds, ground, wheels = ground, scale = 1, carEvery = 0.5, each = () => {} }) {
+  let nextFix = 0;
+  for (let step = 0; step <= Math.round(seconds / carEvery); step += 1) {
+    const t = step * carEvery;
+    while (nextFix <= t) {
+      watch.ground(T0 + nextFix * 1000, ground(nextFix) / 3.6);
+      nextFix += 1;
+    }
+    watch.car(T0 + t * 1000, Math.round(scale * wheels(t - WHEEL_LAG_MS / 1000)));
+    each(t, watch.at(T0 + t * 1000));
+  }
+  return watch;
+}
+
+test('while driving, wheelspin shows within a reading or two and goes when the wheels grip again', () => {
+  const seen = [];
+  const watch = watchDrive(new WheelWatch(), {
+    seconds: 60,
+    ground: () => 40,
+    wheels: (t) => (t >= 30 && t < 34 ? 80 : 40),
+    scale: 1.03,
+    each: (t, state) => seen.push({ t, kind: state?.kind ?? null, slip: state?.slipPct ?? null }),
+  });
+  const spinning = seen.filter(({ kind }) => kind === 'spin').map(({ t }) => t);
+  assert.ok(spinning[0] >= 30.5 && spinning[0] <= 31.5, `first shown at ${spinning[0]}`);
+  assert.ok(spinning.at(-1) >= 33.5 && spinning.at(-1) <= 35, `last shown at ${spinning.at(-1)}`);
+  assert.ok(seen.filter(({ t }) => t < 30 || t > 36).every(({ kind }) => kind === null));
+  assert.ok(Math.abs(seen.find(({ t }) => t === 33).slip - 100) < 5);
+  // The scale of the speedometer was learned on the way.
+  assert.ok(Math.abs(watch.factor - 1.03) < 0.015, `factor ${watch.factor}`);
+  assert.ok(watch.steady >= 8);
+});
+
+test('while driving, one reading a little off is not shown', () => {
+  const seen = [];
+  watchDrive(new WheelWatch(), { seconds: 40, ground: () => 50, wheels: (t) => (t >= 20 && t < 20.5 ? 61 : 50), each: (t, state) => seen.push(state?.kind ?? null) });
+  assert.ok(seen.every((kind) => kind === null));
+});
+
+test('a scale learned on an earlier drive is used from the first reading', () => {
+  // The speedometer reads eight percent high: without the scale that is two thirds of the way to a mark.
+  const fresh = watchDrive(new WheelWatch({ factor: 1.08 }), { seconds: 3, ground: () => 60, scale: 1.08 });
+  assert.ok(Math.abs(fresh.at(T0 + 3000).slipPct) < 1.5);
+  assert.equal(new WheelWatch({ factor: 3 }).factor, 1);
+  assert.equal(new WheelWatch().factor, 1);
+});
+
+test('without fresh readings the watch says nothing', () => {
+  const watch = new WheelWatch();
+  assert.equal(watch.at(T0), null);
+  // The car alone, no GPS.
+  watch.car(T0, 50);
+  assert.equal(watch.at(T0), null);
+  watch.ground(T0, 14);
+  watch.ground(T0 + 1000, 14);
+  watch.car(T0 + 1200, 50);
+  assert.notEqual(watch.at(T0 + 1300), null);
+  // Long after the last reading it is stale.
+  assert.equal(watch.at(T0 + 9000), null);
 });

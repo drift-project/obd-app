@@ -30,6 +30,17 @@ const STRONG_PCT = 30; // a single value this far out is believed on its own
 const SAME_SPAN_MS = 2500; // values further apart do not belong to one span
 
 const median = (values) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
+const comparable = (factor) => factor > 0.8 && factor < 1.25;
+
+/** One reading of the car against what it would read with gripping wheels, both in km/h. */
+function judge(car, expected) {
+  const excess = car - expected;
+  const slip = (100 * excess) / Math.max(expected, FLOOR_KMH);
+  let kind = null;
+  if (excess >= SPIN_KMH && slip >= SPIN_PCT) kind = 'spin';
+  else if (expected >= LOCK_FROM_KMH && excess <= LOCK_KMH && slip <= LOCK_PCT) kind = 'lock';
+  return { excess, slip, kind };
+}
 
 /**
  * Compares the car's speed with the speed over ground through a recording.
@@ -64,8 +75,8 @@ export function wheelSlip(recording) {
   const measured = ratios.length >= MIN_STEADY_VALUES ? median(ratios) : 1;
   // A ratio far from one is not a speedometer error: the two speeds are not the same thing at all
   // (other units, a broken sensor). Nothing is corrected then, and nothing is marked either.
-  const comparable = measured > 0.8 && measured < 1.25;
-  const factor = comparable ? measured : 1;
+  const trusted = comparable(measured);
+  const factor = trusted ? measured : 1;
 
   const data = new Float64Array(car.times.length * 4);
   const kinds = [];
@@ -79,15 +90,11 @@ export function wheelSlip(recording) {
       continue;
     }
     const expected = speed * 3.6 * factor;
-    const excess = car.values[index] - expected;
-    const slip = (100 * excess) / Math.max(expected, FLOOR_KMH);
+    const { excess, slip, kind } = judge(car.values[index], expected);
     data[index * 4 + 1] = expected;
     data[index * 4 + 2] = excess;
     data[index * 4 + 3] = slip;
-    if (!comparable) kinds.push(null);
-    else if (excess >= SPIN_KMH && slip >= SPIN_PCT) kinds.push('spin');
-    else if (expected >= LOCK_FROM_KMH && excess <= LOCK_KMH && slip <= LOCK_PCT) kinds.push('lock');
-    else kinds.push(null);
+    kinds.push(trusted ? kind : null);
   }
 
   // Values of one kind that follow each other make a span. It reaches half way to the neighbouring values.
@@ -116,9 +123,101 @@ export function wheelSlip(recording) {
 
   return {
     factor,
-    steady: comparable && ratios.length >= MIN_STEADY_VALUES ? ratios.length : 0,
+    steady: trusted && ratios.length >= MIN_STEADY_VALUES ? ratios.length : 0,
     columns: ['timestamp_ms', 'ground_kmh', 'excess_kmh', 'slip_pct'],
     data,
     spans,
   };
+}
+
+const WATCH_FIXES_MS = 8000; // how much of the GPS speed is kept while driving
+const WATCH_RATIOS = 120; // the scale is taken from this many steady readings at most
+const FRESH_MS = 2500; // a reading older than this says nothing about now
+
+/**
+ * The same comparison while driving, one reading at a time. It cannot look
+ * ahead, so a stretch counts as steady by what lies behind it, and a single
+ * reading that is a little off is not shown until the next one agrees.
+ */
+export class WheelWatch {
+  #fixes = []; // [time, m/s], oldest first
+  #ratios = [];
+  #factor;
+  #last = null; // the reading before: { time, kmh }
+  #kind = null; // what the reading before looked like
+  #state = null;
+
+  /** `factor`: the scale between the car and GPS found on an earlier drive, to start from. */
+  constructor({ factor = 1 } = {}) {
+    this.#factor = comparable(factor) ? factor : 1;
+  }
+
+  /** Car speed over ground speed while the wheels grip, as far as it is known. */
+  get factor() {
+    return this.#factor;
+  }
+
+  /** The number of steady readings of this drive that the scale rests on. */
+  get steady() {
+    return this.#ratios.length;
+  }
+
+  /** Speed over ground in m/s from a fix that arrived at `time` (ms). */
+  ground(time, speed) {
+    if (!Number.isFinite(speed)) return;
+    this.#fixes.push([time, speed]);
+    while (this.#fixes.length > 2 && this.#fixes[0][0] < time - WATCH_FIXES_MS) this.#fixes.shift();
+  }
+
+  #groundAt(time) {
+    const fixes = this.#fixes;
+    for (let index = fixes.length - 1; index >= 0; index -= 1) {
+      const [at, speed] = fixes[index];
+      if (at > time) continue;
+      const next = fixes[index + 1];
+      if (next && next[0] - at <= GPS_HOLD_MS) return speed + ((next[1] - speed) * (time - at)) / (next[0] - at);
+      return time - at <= GPS_HOLD_MS ? speed : null;
+    }
+    return null;
+  }
+
+  /** A speed reading from the car in km/h, taken at `time` (ms). */
+  car(time, kmh) {
+    if (!Number.isFinite(kmh)) return;
+    const previous = this.#last;
+    this.#last = { time, kmh };
+    const speed = this.#groundAt(time - WHEEL_LAG_MS);
+    if (speed === null) {
+      this.#state = null;
+      this.#kind = null;
+      return;
+    }
+    const before = this.#groundAt(time - WHEEL_LAG_MS - STEADY_MS);
+    const steady =
+      before !== null &&
+      speed >= MIN_STEADY_SPEED &&
+      Math.abs(speed - before) <= STEADY_MS_CHANGE / 2 &&
+      previous !== null &&
+      time - previous.time <= SAME_SPAN_MS &&
+      Math.abs(previous.kmh - kmh) <= 1.5;
+    if (steady) {
+      this.#ratios.push(kmh / (speed * 3.6));
+      if (this.#ratios.length > WATCH_RATIOS) this.#ratios.shift();
+      const measured = this.#ratios.length >= MIN_STEADY_VALUES ? median(this.#ratios) : null;
+      if (measured !== null && comparable(measured)) this.#factor = measured;
+    }
+    const { slip, kind } = judge(kmh, speed * 3.6 * this.#factor);
+    const shown = kind !== null && (kind === this.#kind || Math.abs(slip) >= STRONG_PCT) ? kind : null;
+    this.#kind = kind;
+    this.#state = { time, slipPct: slip, kind: shown };
+  }
+
+  /**
+   * What the wheels are doing at `time` (ms): `{ slipPct, kind }` with `kind`
+   * 'spin', 'lock' or null, or null when there is no fresh reading to judge by.
+   */
+  at(time) {
+    const state = this.#state;
+    return state && time - state.time <= FRESH_MS ? { slipPct: state.slipPct, kind: state.kind } : null;
+  }
 }

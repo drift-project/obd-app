@@ -166,6 +166,19 @@ main {
   font-size: 0.9375rem;
 }
 
+/* Something the driver has to act on now. */
+.alarm {
+  margin: 0;
+  padding: 14px;
+  border: 2px solid var(--red);
+  border-radius: 12px;
+  background: #3a0d0c;
+  color: #fff;
+  font: italic 800 1.25rem/1.2 var(--display);
+  text-align: center;
+  animation: pulse 1s ease-in-out infinite;
+}
+
 .progress {
   margin: 0;
   color: var(--muted);
@@ -701,8 +714,46 @@ small {
   display: none;
 }
 
-.replay-add {
+.replay-add,
+.replay-examples {
   width: 100%;
+}
+
+/* The drifts of a recording, one line each; a tap goes there. */
+.drift-list {
+  display: grid;
+  gap: 6px;
+  padding: 0 10px 12px;
+}
+
+.drift-list button {
+  display: grid;
+  grid-template-columns: 4.5rem 3rem 3.5rem 1fr;
+  align-items: baseline;
+  gap: 8px;
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: 0.875rem/1.2 system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+  text-align: left;
+  cursor: pointer;
+}
+
+.drift-list strong {
+  color: var(--blue);
+  font: italic 800 1.125rem/1 var(--display);
+}
+
+.drift-list .spun {
+  color: var(--red);
+}
+
+.drift-list span:last-child {
+  color: var(--muted);
 }
 
 /* One strip per signal, all over the same stretch of time. */
@@ -1014,8 +1065,20 @@ summary:focus-visible {
   font: inherit;
 }
 
-.settings input {
+.settings input[type='number'] {
   width: 5.5rem;
+}
+
+.settings .check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings input[type='checkbox'] {
+  width: 22px;
+  min-height: 22px;
+  accent-color: var(--blue);
 }
 
 .hint {

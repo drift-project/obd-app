@@ -17,6 +17,7 @@ const WHEEL_HOLD_MS = 2500; // how long a speed read from the car counts as the 
 const NEW_SESSION_MS = 30000;
 const ATTITUDE = ['qx', 'qy', 'qz', 'qw'];
 const ACCELERATION = ['x_ms2', 'y_ms2', 'z_ms2'];
+const ROTATION = ['x_rads', 'y_rads', 'z_rads'];
 
 /** The columns of a stream row by row, or null when it is absent or has gaps (then its columns do not line up). */
 function rowsOf(recording, stream, columns) {
@@ -36,11 +37,16 @@ export function driftTable(recording) {
   const fixes = recording.series('gps.latitude_deg').times;
   if (!attitudes.length || !fixes.length) return null;
   const acceleration = rowsOf(recording, 'linear_acceleration', ACCELERATION);
+  // With gravity, and the gyroscope: from these the estimator tells when the phone was handled.
+  const accelerometer = rowsOf(recording, 'accelerometer', ACCELERATION);
+  const gyroscope = rowsOf(recording, 'gyroscope', ROTATION);
 
   // The samples are taken in the order they reached the app. At the same instant the attitude comes first.
   const feeds = [
     ...attitudes.map((rows) => ({ kind: 'attitude', rows, times: rows.times, at: 0 })),
     ...(acceleration ? [{ kind: 'acceleration', rows: acceleration, times: acceleration.times, at: 0 }] : []),
+    ...(accelerometer ? [{ kind: 'accelerometer', rows: accelerometer, times: accelerometer.times, at: 0 }] : []),
+    ...(gyroscope ? [{ kind: 'gyroscope', rows: gyroscope, times: gyroscope.times, at: 0 }] : []),
     { kind: 'fix', rows: null, times: fixes, at: 0 },
   ];
   const exact = (id, time) => recording.value(id, time, 0);
@@ -100,6 +106,10 @@ export function driftTable(recording) {
       estimator.attitude(time, feed.rows.values.map((values) => values[index]), restart);
     } else if (feed.kind === 'acceleration') {
       estimator.acceleration(time, feed.rows.values.map((values) => values[index]));
+    } else if (feed.kind === 'accelerometer') {
+      estimator.accelerometer(time, feed.rows.values.map((values) => values[index]));
+    } else if (feed.kind === 'gyroscope') {
+      estimator.gyroscope(time, feed.rows.values.map((values) => values[index]));
     } else {
       const wheel = recording.value('obd.speed_kmh', time, WHEEL_HOLD_MS);
       estimator.fix(time, {

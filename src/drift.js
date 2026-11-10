@@ -111,6 +111,18 @@ const MIN_EVIDENCE = 6; // summed squares of velocity changes, (m/s)^2
 const MIN_MATCH = 0.75; // 1 means the accelerometer explains GPS exactly
 const PATH_STEPS = 5; // points added to the line per fix
 const PATH_LIMIT = 4000;
+// A phone that is picked up or shifted in its holder no longer turns with the car, and the heading taken
+// from it is worth nothing until it is set again. Being handled shows as tipping: rotation about
+// horizontal axes, which a car barely does. On real drives the gyroscope showed up to about 14 degrees of
+// it while drifting and over bumps, and 25 to 120 degrees whenever the phone was in a hand.
+const TIP_LIMIT_DEG = 20;
+const TIP_MEMORY_S = 5; // tipping is summed over about this long
+// Where up is in the phone's own coordinates is learned from the accelerometer, but only while the phone is
+// at rest or moving steadily: it reads gravity alone when it reads 9.81 m/s2 and nothing turns.
+const GRAVITY = 9.81;
+const AT_REST_MS2 = 0.4;
+const AT_REST_RADS = 0.06;
+const UP_SETTLE_S = 3;
 
 export class DriftEstimator {
   #last = null; // newest attitude quaternion
@@ -128,6 +140,12 @@ export class DriftEstimator {
   #delay; // ms a fix is older than its arrival
   #aided = false;
   #path = [];
+  #up = null; // unit vector: where up is in the phone's coordinates while it sits in its holder
+  #upAt = null; // time of the accelerometer sample that last went into it
+  #spin = Infinity; // newest rate of turn from the gyroscope, rad/s, any axis
+  #spinAt = null;
+  #tip = [0, 0, 0]; // rotation about horizontal axes over the last seconds, radians, phone coordinates
+  #moved = false; // the phone was handled and the heading has not been set again since
 
   /**
    * `minSpeed` (m/s): below it GPS course is too noisy to calibrate on.
@@ -141,6 +159,56 @@ export class DriftEstimator {
     this.maxTurn = maxTurn;
     this.gain = gain;
     this.#delay = delay;
+  }
+
+  /**
+   * Acceleration with gravity at `time` (ms), in phone coordinates, m/s². It tells where up is in the
+   * phone's coordinates, which is what the gyroscope is judged against.
+   */
+  accelerometer(time, vector) {
+    if (!vector.every(Number.isFinite)) return;
+    const size = Math.hypot(...vector);
+    const seconds = this.#upAt === null ? 0 : (time - this.#upAt) / 1000;
+    this.#upAt = time;
+    if (Math.abs(size - GRAVITY) > AT_REST_MS2 || this.#spin > AT_REST_RADS) return;
+    const unit = vector.map((value) => value / size);
+    if (!this.#up) {
+      this.#up = unit;
+      return;
+    }
+    const share = Math.min(Math.max(seconds, 0) / UP_SETTLE_S, 1);
+    const mixed = this.#up.map((value, axis) => value + (unit[axis] - value) * share);
+    const length = Math.hypot(...mixed) || 1;
+    this.#up = mixed.map((value) => value / length);
+  }
+
+  /**
+   * Rate of turn at `time` (ms) from the gyroscope, in phone coordinates, rad/s. Turning about the
+   * vertical is the car; tipping over is somebody's hand. After that the heading is unknown until the
+   * car has driven straight again.
+   */
+  gyroscope(time, vector) {
+    if (!vector.every(Number.isFinite)) return;
+    const seconds = this.#spinAt === null ? 0 : Math.min(Math.max((time - this.#spinAt) / 1000, 0), 0.1);
+    this.#spinAt = time;
+    this.#spin = Math.hypot(...vector);
+    const up = this.#up;
+    if (!up) return;
+    const about = vector[0] * up[0] + vector[1] * up[1] + vector[2] * up[2];
+    const keep = Math.exp(-seconds / TIP_MEMORY_S);
+    this.#tip = this.#tip.map((value, axis) => value * keep + (vector[axis] - about * up[axis]) * seconds);
+    if (Math.hypot(...this.#tip) * DEGREES < TIP_LIMIT_DEG) return;
+    // Handled. Where up is has to be learned again, and so has everything that hung on how the phone sat.
+    this.#up = null;
+    this.#tip = [0, 0, 0];
+    this.#moved = true;
+    this.#calibrated = false;
+    this.#corrected = false;
+    this.#straightFixes = 0;
+    this.#sums.length = 0;
+    this.#match = DELAYS_MS.map(() => ({ re: 0, im: 0, energy: 0 }));
+    this.#aided = false;
+    if (this.#fix) this.#fix.slip = null;
   }
 
   get calibrated() {
@@ -367,6 +435,7 @@ export class DriftEstimator {
       if (!this.#calibrated) {
         this.#offset = observed;
         this.#calibrated = true;
+        this.#moved = false;
         this.#correctedAt = time;
         this.#corrected = true;
       } else if (Math.abs(error) <= creep || this.#straightFixes >= LONG_STRAIGHT_FIXES) {
@@ -399,8 +468,9 @@ export class DriftEstimator {
    * north and their difference, the rate of turn in deg/s (positive to the
    * right), speed in m/s and position, the heading correction, whether the
    * heading was ever set, whether the newest fix corrected it, whether the
-   * accelerometer carries the velocity between fixes and the delay of the
-   * fixes in ms. Unknown values are null.
+   * accelerometer carries the velocity between fixes, the delay of the
+   * fixes in ms and whether the phone was handled and the heading has not
+   * been set again since. Unknown values are null.
    */
   at(time) {
     const yaw = this.#yawAt(time);
@@ -435,6 +505,7 @@ export class DriftEstimator {
       corrected: this.#corrected,
       aided: carried !== null,
       gpsDelay: this.#aided ? this.#delay : null,
+      moved: this.#moved,
     };
   }
 }

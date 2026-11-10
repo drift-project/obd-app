@@ -1,0 +1,22 @@
+[
+  {
+    "file": "drifthing_log_20261110_200914.zip",
+    "title": "Road drive, 7 min, two bursts of wheelspin",
+    "about": "10 November 2026, BMW E39, phone lying flat. Recorded with app 0.5.0: the drift angle logged on the phone wandered with the compass, the replay works it out again."
+  },
+  {
+    "file": "drifthing_log_20261110_202207.zip",
+    "title": "Drift run 1, 3 min",
+    "about": "10 November 2026, BMW E39, closed stretch of road. Recorded with app 0.6.0. Slides up to 27 degrees."
+  },
+  {
+    "file": "drifthing_log_20261110_202918.zip",
+    "title": "Drift run 2, 2.5 min",
+    "about": "10 November 2026, BMW E39, the same stretch the other way. Recorded with app 0.6.0."
+  },
+  {
+    "file": "drifthing_log_20261110_203420.zip",
+    "title": "Drift run 3, 4 min",
+    "about": "10 November 2026, BMW E39, the same stretch. Recorded with app 0.6.0. Slides up to 33 degrees, wheels up to three times the ground speed."
+  }
+]

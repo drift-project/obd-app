@@ -423,6 +423,88 @@ test('what the accelerometer summed for one attitude sensor is not carried over 
   assert.equal(seen.find(({ t }) => t > 20.02).aided, false);
 });
 
+// --- A phone that is picked up ---------------------------------------------------------
+
+/** What the accelerometer of the phone in its holder reads while nothing accelerates: gravity, in phone coordinates. */
+const upInPhone = turnVector(inverse(MOUNT), UP);
+const atRest = upInPhone.map((value) => value * 9.81);
+// An axis across the phone that lies level: tipping happens about axes like this one.
+const level = (() => {
+  const across = [upInPhone[1], -upInPhone[0], 0];
+  const length = Math.hypot(...across);
+  return across.map((value) => value / length);
+})();
+
+/**
+ * A straight drive that sets the heading, with the motion sensors running,
+ * then `seconds` of the gyroscope reading `rate(t)` (rad/s, phone coordinates).
+ */
+function afterTurning(rate, seconds) {
+  const estimator = instant();
+  const straight = { heading: 45, course: 45, speed: 10 };
+  const feed = (t, spin) => {
+    estimator.accelerometer(t * 1000, atRest);
+    estimator.gyroscope(t * 1000, spin);
+    estimator.attitude(t * 1000, attitude(45));
+    if (Math.round(t * 60) % 60 === 0) estimator.fix(t * 1000, straight);
+  };
+  for (let step = 0; step <= 240; step += 1) feed(step / 60, [0, 0, 0]);
+  assert.equal(estimator.calibrated, true);
+  for (let step = 1; step <= seconds * 60; step += 1) feed(4 + step / 60, rate(step / 60));
+  return { estimator, feed, end: 4 + seconds };
+}
+
+test('a phone that is tipped over loses the heading until the car has driven straight again', () => {
+  // Picked up: half a second of turning about a level axis at 80 degrees a second.
+  const { estimator, feed, end } = afterTurning((t) => (t <= 0.5 ? level.map((value) => value * 80 * RADIANS) : [0, 0, 0]), 1);
+  const lost = estimator.at(end * 1000);
+  assert.equal(lost.calibrated, false);
+  assert.equal(lost.moved, true);
+  assert.equal(lost.heading, null);
+  assert.equal(lost.driftAngle, null);
+  // Back in the holder and straight on: the heading is taken from GPS again.
+  for (let step = 1; step <= 300; step += 1) feed(Math.ceil(end) + step / 60, [0, 0, 0]);
+  const again = estimator.at((Math.ceil(end) + 5) * 1000);
+  assert.equal(again.calibrated, true);
+  assert.equal(again.moved, false);
+  near(again.heading, 45, 0.01, 'heading');
+});
+
+test('turning with the car is not tipping, however fast and long', () => {
+  // A donut: 150 degrees a second about the vertical for ten seconds.
+  const { estimator, end } = afterTurning(() => upInPhone.map((value) => value * 150 * RADIANS), 10);
+  assert.equal(estimator.calibrated, true);
+  assert.equal(estimator.at(end * 1000).moved, false);
+});
+
+test('body roll, bumps and a ramp stay below what counts as tipping', () => {
+  // Rolling six degrees to either side once a second, and a ramp that pitches the car up by twelve degrees.
+  const roll = (t) => level.map((value) => value * 6 * RADIANS * 2 * Math.PI * Math.cos(2 * Math.PI * t));
+  assert.equal(afterTurning(roll, 20).estimator.calibrated, true);
+  const ramp = (t) => (t <= 2 ? level.map((value) => value * 6 * RADIANS) : [0, 0, 0]);
+  assert.equal(afterTurning(ramp, 10).estimator.calibrated, true);
+});
+
+test('without knowing where up is nothing is judged', () => {
+  // No accelerometer: the gyroscope alone cannot tell turning from tipping, so the heading stays.
+  const estimator = instant();
+  for (let step = 0; step <= 240; step += 1) {
+    estimator.attitude((step * 1000) / 60, attitude(45));
+    estimator.gyroscope((step * 1000) / 60, level.map((value) => value * 3));
+    if (step % 60 === 0) estimator.fix((step * 1000) / 60, { heading: 45, course: 45, speed: 10 });
+  }
+  assert.equal(estimator.calibrated, true);
+  // An accelerometer that never reads plain gravity (a phone in a hand, a car that corners) teaches nothing either.
+  const shaken = instant();
+  for (let step = 0; step <= 240; step += 1) {
+    shaken.accelerometer((step * 1000) / 60, atRest.map((value) => value * 1.3));
+    shaken.attitude((step * 1000) / 60, attitude(45));
+    shaken.gyroscope((step * 1000) / 60, level.map((value) => value * 3));
+    if (step % 60 === 0) shaken.fix((step * 1000) / 60, { heading: 45, course: 45, speed: 10 });
+  }
+  assert.equal(shaken.calibrated, true);
+});
+
 test('the recorded stream names every value it writes', () => {
   assert.equal(DRIFT_STREAM.name, 'drift');
   assert.equal(DRIFT_STREAM.columns.length, DRIFT_STREAM.digits.length);

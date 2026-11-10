@@ -29,6 +29,7 @@
   </nav>
 
   <main>
+    <p id="alarm" class="alarm" role="alert" hidden></p>
     <p id="notice" class="notice" hidden></p>
     <p id="progress" class="progress" aria-live="polite" hidden></p>
 
@@ -38,7 +39,7 @@
       <dl class="drift-readouts">
         <div class="drift-angle"><dt>Drift angle</dt><dd><span id="drift-angle">--</span><small id="drift-side">°</small></dd></div>
         <div><dt>GPS</dt><dd><span id="drift-gps">--</span><small>km/h</small></dd></div>
-        <div><dt>Car</dt><dd><span id="drift-car">--</span><small>km/h</small></dd></div>
+        <div id="drift-car-tile"><dt>Car</dt><dd><span id="drift-car">--</span><small>km/h</small><small id="drift-slip" class="slip"></small></dd></div>
         <div><dt>Turn</dt><dd><span id="drift-turn">--</span><small>°/s</small></dd></div>
       </dl>
       <p id="drift-note" class="drift-note"></p>
@@ -48,6 +49,7 @@
       <div class="replay-source">
         <button id="replay-log" class="button" type="button">Replay the log in this app</button>
         <button id="replay-open" class="button" type="button">Open files…</button>
+        <select id="replay-examples" class="replay-examples" aria-label="Example recordings" hidden></select>
         <input id="replay-files" type="file" accept=".csv,.zip,text/csv,application/zip" multiple hidden>
       </div>
       <p id="replay-info" class="replay-info">Plays back a recording: the log kept in this app, or the CSV and ZIP files saved or shared from it.</p>
@@ -70,10 +72,20 @@
         <input id="replay-seek" class="replay-seek" type="range" min="0" max="1000" step="1" value="0" aria-label="Position in the recording">
         <p id="replay-clock" class="replay-clock"></p>
 
+        <details id="replay-drifts" class="adapter" hidden>
+          <summary id="replay-drifts-title">Drifts</summary>
+          <div id="replay-drift-list" class="drift-list"></div>
+        </details>
+
         <div id="replay-charts" class="charts"></div>
         <p id="replay-range" class="replay-range"></p>
         <p id="replay-marks" class="replay-range"></p>
         <select id="replay-add" class="replay-add" aria-label="Add a signal to the charts"></select>
+
+        <details id="replay-summary" class="adapter">
+          <summary>Summary of the drive</summary>
+          <dl id="replay-summary-list"></dl>
+        </details>
       </div>
     </section>
 
@@ -125,6 +137,7 @@
           <div class="tile optional" data-field="oil_c" hidden><dt>Oil</dt><dd><span data-value="oil_c">--</span><small>°C</small></dd></div>
           <div class="tile optional" data-field="ambient_c" hidden><dt>Outside air</dt><dd><span data-value="ambient_c">--</span><small>°C</small></dd></div>
           <div class="tile optional" data-field="catalyst_c" hidden><dt>Catalyst</dt><dd><span data-value="catalyst_c">--</span><small>°C</small></dd></div>
+          <div class="tile optional" data-field="maf_gs" hidden><dt>Power</dt><dd><span data-value="power_hp">--</span><small>hp</small></dd></div>
         </dl>
       </div>
     </section>
@@ -152,6 +165,7 @@
       <div class="log-actions">
         <button id="save" class="button" type="button" disabled>Save</button>
         <button id="share" class="button" type="button" hidden disabled>Share</button>
+        <button id="replay-this" class="button" type="button" disabled>Replay</button>
         <button id="clear" class="button danger" type="button" disabled>Clear</button>
       </div>
     </section>
@@ -159,6 +173,15 @@
     <details id="phone" class="adapter">
       <summary>Phone sensors</summary>
       <dl id="phone-list"></dl>
+    </details>
+
+    <details id="alarms" class="adapter">
+      <summary>Alarm</summary>
+      <div class="settings">
+        <label>Coolant alarm at <span><input id="alarm-coolant" type="number" inputmode="numeric" min="0" max="150" step="1" value="110"> °C</span></label>
+        <label class="check"><input id="alarm-sound" type="checkbox" checked> Sound and vibration</label>
+      </div>
+      <p class="hint">When the coolant reaches this temperature the screen says so in red and the phone beeps until it has cooled by three degrees. 0 turns the alarm off. Read for drifting, the temperature comes every ten seconds.</p>
     </details>
 
     <details id="battery" class="adapter">

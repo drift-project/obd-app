@@ -4,7 +4,9 @@
 
 import { SignalChart } from './chart.js';
 import { driftTable } from './drift-replay.js';
+import { powerTable } from './engine.js';
 import { Recording, parseCsv, skipGap, streamOf } from './replay.js';
+import { findDrifts, summarize } from './summary.js';
 import { wheelSlip } from './wheels.js';
 import { unzip } from './zip.js';
 
@@ -25,6 +27,7 @@ const STREAM_TITLES = {
   drift: 'drift view',
   drift_recorded: 'drift view, as recorded',
   wheels: 'wheels against the ground',
+  engine: 'engine, estimated',
   accelerometer: 'accelerometer',
   linear_acceleration: 'acceleration, no gravity',
   gyroscope: 'gyroscope',
@@ -36,6 +39,8 @@ const SIGNALS_KEY = 'drifthing-obd-replay-signals';
 const SPEED_KEY = 'drifthing-obd-replay-speed';
 const WINDOW_KEY = 'drifthing-obd-replay-window';
 const TRACK_POINTS = 5000;
+const EXAMPLES = 'examples/'; // recordings that come with the app, listed in index.json there
+const LEAD_IN_MS = 1500; // a tap on a drift starts the replay this much before it
 // How long a value stays on screen after it was measured.
 const CAR_HOLD_MS = 5000;
 const DRIFT_HOLD_MS = 1500;
@@ -126,6 +131,51 @@ export class ReplayView {
     $('replay-add').addEventListener('change', (event) => {
       if (event.target.value) this.#addPanel(event.target.value);
     });
+    $('replay-examples').addEventListener('change', (event) => {
+      const name = event.target.value;
+      event.target.value = '';
+      if (name) this.openExample(name);
+    });
+    this.#listExamples();
+  }
+
+  /** The recordings that come with the app. Without a connection, or without any, the list stays away. */
+  async #listExamples() {
+    const select = this.#$('replay-examples');
+    try {
+      const response = await fetch(`${EXAMPLES}index.json`);
+      const examples = response.ok ? await response.json() : [];
+      if (!Array.isArray(examples) || !examples.length) return;
+      const first = document.createElement('option');
+      first.value = '';
+      first.textContent = 'Example recordings…';
+      select.replaceChildren(
+        first,
+        ...examples.map(({ file, title }) => {
+          const option = document.createElement('option');
+          option.value = file;
+          option.textContent = title;
+          return option;
+        }),
+      );
+      select.hidden = false;
+    } catch {
+      // No list, no examples: the rest of the replay does not need them.
+    }
+  }
+
+  /** Replay one of the recordings that come with the app. */
+  async openExample(name) {
+    this.#play(false);
+    this.#text('replay-info', 'Fetching the example…');
+    try {
+      // Only names from the list, and only out of the examples folder.
+      const response = await fetch(`${EXAMPLES}${encodeURIComponent(name)}`);
+      if (!response.ok) throw new Error(`the server answered ${response.status}`);
+      await this.openFiles([new File([await response.blob()], name)]);
+    } catch (error) {
+      this.#text('replay-info', `The example could not be fetched: ${error.message}.`);
+    }
   }
 
   #fill(select, options, chosen) {
@@ -193,6 +243,8 @@ export class ReplayView {
     // The speed of the wheels against the speed over ground: its own signals, and bands on every chart.
     const wheels = recorded.empty ? null : wheelSlip(recorded);
     if (wheels) all = [...all, { stream: 'wheels', columns: wheels.columns, data: wheels.data }];
+    const power = recorded.empty ? null : powerTable(recorded);
+    if (power) all = [...all, { stream: 'engine', ...power }];
     const recording = all === tables ? recorded : new Recording(all);
     for (const stream of recording.skipped) problems.push(`"${stream}" has no times in milliseconds in its first column`);
     const trouble = problems.length ? ` Left out: ${problems.join('; ')}.` : '';
@@ -232,8 +284,70 @@ export class ReplayView {
       `${source}: ${clock(recording.start)} to ${clock(recording.end)}, ${recording.signals.length} signals${skipped}.${reworked}${placeless}${trouble}`,
     );
     this.#text('replay-marks', this.#marksText(wheels));
+    const drifts = findDrifts(recording);
+    this.#listDrifts(drifts);
+    this.#listTotals(summarize(recording, drifts, this.#marks));
     $('replay-body').hidden = false;
     $('replay-map').hidden = this.#positions === null;
+  }
+
+  /** The drifts of the recording, one line each; a tap starts the replay just before it. */
+  #listDrifts(drifts) {
+    const $ = this.#$;
+    $('replay-drifts').hidden = drifts.length === 0;
+    this.#text('replay-drifts-title', `Drifts in this recording: ${drifts.length}`);
+    $('replay-drift-list').replaceChildren(
+      ...drifts.map((drift) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        const cell = (name, content, className = '') => {
+          const element = document.createElement(name);
+          element.textContent = content;
+          element.className = className;
+          return element;
+        };
+        const spun = drift.slipPct !== null && drift.slipPct >= 15;
+        button.append(
+          cell('span', clock(drift.from)),
+          cell('span', `${((drift.to - drift.from) / 1000).toFixed(1)} s`),
+          cell('strong', `${Math.round(Math.abs(drift.peak))}° ${drift.side}`),
+          cell('span', `${Math.round(drift.speedKmh)} km/h${spun ? `, wheels +${Math.round(drift.slipPct)}%` : ''}`, spun ? 'spun' : ''),
+        );
+        button.addEventListener('click', () => this.#moveTo(drift.from - LEAD_IN_MS));
+        return button;
+      }),
+    );
+  }
+
+  /** The totals of the recording as a list of names and values; what the recording cannot tell is left out. */
+  #listTotals(totals) {
+    const rows = [['Recorded', span(totals.recordedMs)]];
+    const add = (name, value) => rows.push([name, value]);
+    if (totals.distanceM !== null) add('Distance', totals.distanceM >= 1000 ? `${(totals.distanceM / 1000).toFixed(2)} km` : `${Math.round(totals.distanceM)} m`);
+    if (totals.topSpeedKmh !== null) add('Top speed over ground', `${Math.round(totals.topSpeedKmh)} km/h`);
+    if (totals.topWheelKmh !== null) add('Top speed of the wheels', `${Math.round(totals.topWheelKmh)} km/h`);
+    if (totals.topRpm !== null) add('Highest revs', `${Math.round(totals.topRpm)} rpm`);
+    if (totals.topCoolantC !== null) add('Hottest coolant', `${Math.round(totals.topCoolantC)} °C`);
+    if (this.#recording.has('drift.drift_angle_deg')) {
+      add('Drifts', totals.drifts ? `${totals.drifts}, ${(totals.driftMs / 1000).toFixed(1)} s in all` : 'none');
+      if (totals.drifts) {
+        add('Largest angle', `${Math.round(Math.abs(totals.bestAngle))}° ${totals.bestAngle > 0 ? 'R' : 'L'}`);
+        add('Longest drift', `${(totals.longestMs / 1000).toFixed(1)} s`);
+        add('Speed while drifting', `${Math.round(totals.driftSpeedKmh)} km/h on average`);
+      }
+    }
+    if (totals.topSlipPct !== null) add('Wheelspin', `${(totals.spinMs / 1000).toFixed(1)} s in all, up to +${Math.round(totals.topSlipPct)}%`);
+    this.#$('replay-summary-list').replaceChildren(
+      ...rows.map(([name, value]) => {
+        const row = document.createElement('div');
+        const term = document.createElement('dt');
+        const data = document.createElement('dd');
+        term.textContent = name;
+        data.textContent = value;
+        row.append(term, data);
+        return row;
+      }),
+    );
   }
 
   /** What the bands on the charts mean, for the line under them. */

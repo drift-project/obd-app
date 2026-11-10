@@ -7,6 +7,7 @@ import { fileName, toCsv } from './csv.js';
 import { DEMO_START, demoDrive, demoPhone } from './demo-drive.js';
 import { DRIFT_STREAM, DriftEstimator, pickAttitude } from './drift.js';
 import { ELM327, PROTOCOL_NAMES, protocolNumber } from './elm327.js';
+import { powerHp } from './engine.js';
 import { offsetBy } from './geo.js';
 import { TrackMap } from './map.js';
 import { FIELDS } from './pids.js';
@@ -18,9 +19,10 @@ import { ELM327Simulator, LoopbackTransport } from './simulator.js';
 import { RowStore, SampleStore } from './storage.js';
 import { Trace } from './trace.js';
 import { WebSerialTransport, pickPort } from './transports.js';
+import { WheelWatch } from './wheels.js';
 import { zip } from './zip.js';
 
-const APP_VERSION = '0.6.2';
+const APP_VERSION = '0.7.0';
 const RPM_MAX = 8000;
 const REDLINE = 0.85;
 const FLUSH_MS = 1000; // a killed page loses at most about this much of the log
@@ -35,6 +37,10 @@ const BATTERY_KEY = 'drifthing-obd-battery'; // capacity, type and voltmeter cor
 const READ_MODE_KEY = 'drifthing-obd-read-mode'; // 'all' or 'drift': what the requests to the car are spent on
 const SESSIONS_KEY = 'drifthing-obd-sessions'; // which version recorded which part of the log, as JSON
 const MAX_SESSIONS = 60;
+const WHEEL_FACTOR_KEY = 'drifthing-obd-wheel-factor'; // car speed over GPS speed with gripping wheels, from the last drive
+const ALARM_KEY = 'drifthing-obd-alarm'; // coolant limit and whether the phone may make a noise, as JSON
+const ALARM_OFF_BELOW = 3; // degrees the coolant has to cool below the limit before the alarm goes
+const ALARM_REPEAT_MS = 8000;
 const ZOOM_KEY = 'drifthing-obd-map-zoom';
 const LAYER_KEY = 'drifthing-obd-map-layer'; // 'map' or 'orthophoto'
 const VIEWS = ['car', 'drift', 'replay'];
@@ -57,6 +63,11 @@ const FORMAT = {
 };
 
 const RPM_FIELD = FIELDS.indexOf('rpm');
+const SPEED_COLUMN = FIELDS.indexOf('speed_kmh');
+const COOLANT_COLUMN = FIELDS.indexOf('coolant_c');
+const AIR_FLOW_COLUMN = FIELDS.indexOf('maf_gs');
+// Values worked out from another one are on offer wherever that one is.
+const WORKED_OUT_FROM = { power_hp: 'maf_gs' };
 const VOLTAGE_COLUMN = FIELDS.indexOf('battery_v');
 
 const $ = (id) => document.getElementById(id);
@@ -107,6 +118,9 @@ const state = {
   readMode: 'all', // 'all' or 'drift', see OBDPoller
   sessions: [], // the recording sessions whose data is in the log
   session: null, // the running one
+  wheels: new WheelWatch(), // wheels against the ground, of the running session or the last one
+  alarm: { coolant: 110, sound: true, on: false, value: null, beepAt: -Infinity },
+  audio: null, // made on the first tap that starts a session: a page may only make a noise after one
 };
 
 const activeRows = () => (state.mode === 'demo' ? state.demoRows : state.rows);
@@ -202,9 +216,14 @@ function feedDrift(name, values) {
       // The demo car and the demo drive are two separate inventions, so their speeds say nothing about each other.
       wheelSpeed: state.mode === 'demo' ? null : wheelSpeed(),
     });
+    if (state.mode !== 'demo') state.wheels.ground(values[0], values[GPS.speed_ms]);
     state.dirty = true;
   } else if (name === 'linear_acceleration') {
     state.drift.acceleration(values[0], values.slice(1));
+  } else if (name === 'accelerometer') {
+    state.drift.accelerometer(values[0], values.slice(1));
+  } else if (name === 'gyroscope') {
+    state.drift.gyroscope(values[0], values.slice(1));
   } else if (name === 'relative_orientation' || name === 'orientation') {
     const source = pickAttitude(state.attitudeFrom, name);
     if (!source) return;
@@ -438,7 +457,81 @@ function sink(row) {
     state.latestAt.set(FIELDS[i], now);
   }
   if (typeof row[VOLTAGE_COLUMN] === 'number') onVoltage(row[0], row[VOLTAGE_COLUMN], row[RPM_FIELD]);
+  if (typeof row[SPEED_COLUMN] === 'number' && state.mode !== 'demo') state.wheels.car(row[0], row[SPEED_COLUMN]);
+  if (typeof row[AIR_FLOW_COLUMN] === 'number') state.latest.set('power_hp', powerHp(row[AIR_FLOW_COLUMN]));
+  if (typeof row[COOLANT_COLUMN] === 'number') watchCoolant(row[COOLANT_COLUMN]);
   state.dirty = true;
+}
+
+// --- Alarm -----------------------------------------------------------------------
+
+function loadAlarm() {
+  try {
+    const saved = JSON.parse(readStored(ALARM_KEY)) ?? {};
+    if (saved.coolant >= 0 && saved.coolant <= 150) state.alarm.coolant = saved.coolant;
+    if (typeof saved.sound === 'boolean') state.alarm.sound = saved.sound;
+  } catch {
+    // Nothing saved yet, or a damaged copy: the defaults stay.
+  }
+  $('alarm-coolant').value = state.alarm.coolant;
+  $('alarm-sound').checked = state.alarm.sound;
+}
+
+function saveAlarm() {
+  const coolant = Number($('alarm-coolant').value);
+  if (coolant >= 0 && coolant <= 150) state.alarm.coolant = Math.round(coolant);
+  state.alarm.sound = $('alarm-sound').checked;
+  writeStored(ALARM_KEY, JSON.stringify({ coolant: state.alarm.coolant, sound: state.alarm.sound }));
+  // A limit moved above the temperature ends an alarm, one moved below it starts one.
+  if (state.alarm.value !== null) watchCoolant(state.alarm.value);
+  state.dirty = true;
+}
+
+/** Three short beeps and a buzz. Quietly does nothing where the browser will not let a page make a noise. */
+function soundAlarm() {
+  try {
+    navigator.vibrate?.([300, 150, 300, 150, 300]);
+    const audio = state.audio;
+    if (!audio) return;
+    for (let beep = 0; beep < 3; beep += 1) {
+      const from = audio.currentTime + beep * 0.35;
+      const tone = audio.createOscillator();
+      const volume = audio.createGain();
+      tone.frequency.value = 1320;
+      volume.gain.setValueAtTime(0.5, from);
+      volume.gain.exponentialRampToValueAtTime(0.01, from + 0.25);
+      tone.connect(volume).connect(audio.destination);
+      tone.start(from);
+      tone.stop(from + 0.26);
+    }
+  } catch {
+    // The banner on the screen is the alarm; the noise is a help.
+  }
+}
+
+/** A coolant temperature from the car: raise the alarm at the limit, end it once the engine has cooled a little. */
+function watchCoolant(value) {
+  const alarm = state.alarm;
+  alarm.value = value;
+  const limit = alarm.coolant;
+  const was = alarm.on;
+  if (!limit) alarm.on = false;
+  else if (value >= limit) alarm.on = true;
+  else if (value <= limit - ALARM_OFF_BELOW) alarm.on = false;
+  if (alarm.on && !was) activeTrace().note(`coolant alarm: ${value} °C, limit ${limit} °C`);
+  if (!alarm.on && was) activeTrace().note(`coolant alarm over: ${value} °C`);
+  const now = performance.now();
+  if (alarm.on && alarm.sound && now - alarm.beepAt >= ALARM_REPEAT_MS) {
+    alarm.beepAt = now;
+    soundAlarm();
+  }
+  if (!alarm.on) alarm.beepAt = -Infinity;
+}
+
+function renderAlarm() {
+  const { on, value, coolant } = state.alarm;
+  $('alarm').hidden = !on;
+  if (on) $('alarm').textContent = `Coolant ${Math.round(value)} °C, over the limit of ${coolant} °C`;
 }
 
 /** What went wrong, in words a driver can act on. */
@@ -563,6 +656,15 @@ function start(mode, makeElm = null) {
   state.attitudeFrom = null;
   state.battery = new BatteryMonitor();
   state.batteryNoted = '';
+  state.wheels = new WheelWatch({ factor: Number(readStored(WHEEL_FACTOR_KEY)) || 1 });
+  state.alarm.on = false;
+  state.alarm.value = null;
+  try {
+    state.audio ??= new AudioContext();
+    state.audio.resume();
+  } catch {
+    // No sound then; the alarm still shows on the screen.
+  }
   // The demo car is made up, so nothing real is recorded next to it: it brings its own drive.
   if (mode === 'demo') startDemoDrive();
   else startSensors();
@@ -584,6 +686,9 @@ function start(mode, makeElm = null) {
     .finally(() => {
       stopSensors();
       stopDemoDrive();
+      // The scale between the car and GPS belongs to the car: the next drive starts from it.
+      if (state.wheels.steady >= 8) writeStored(WHEEL_FACTOR_KEY, state.wheels.factor.toFixed(4));
+      state.alarm.on = false;
       closeSession();
       state.mode = null;
       state.controller = null;
@@ -982,7 +1087,7 @@ function renderValues() {
   for (const element of document.querySelectorAll('[data-value]')) {
     const field = element.dataset.value;
     const value = state.latest.get(field);
-    if (value === undefined) element.textContent = supported && !supported.has(field) ? 'n/a' : '--';
+    if (value === undefined) element.textContent = supported && !supported.has(WORKED_OUT_FROM[field] ?? field) ? 'n/a' : '--';
     else element.textContent = FORMAT[field] ? FORMAT[field](value) : String(Math.round(value));
   }
   for (const element of document.querySelectorAll('[data-bar]')) {
@@ -1023,6 +1128,7 @@ function renderLog() {
   $('sample-span').textContent = span ? `· ${clockTime(new Date(span[0]))} → ${clockTime(new Date(span[1]))}` : '';
   $('save').disabled = empty;
   $('share').disabled = empty;
+  $('replay-this').disabled = empty;
   $('clear').disabled = empty;
   if (empty && state.clearTimer) disarmClear();
 }
@@ -1054,12 +1160,13 @@ function showView(view) {
   state.dirty = true;
 }
 
-const NO_DRIFT = { heading: null, course: null, driftAngle: null, yawRate: null, position: null, calibrated: false, corrected: false, aided: false };
+const NO_DRIFT = { heading: null, course: null, driftAngle: null, yawRate: null, position: null, calibrated: false, corrected: false, aided: false, moved: false };
 
 function driftNote(drift, live, line) {
   if (!live) return line.length ? 'The line of the last drive. Start a recording to see the car move.' : 'Start a recording to see the car here.';
   if (!drift.position) return 'Waiting for a GPS position.';
   if (!state.attitudeFrom) return 'No orientation sensor yet: the car is turned along its course and there is no drift angle.';
+  if (drift.moved) return 'The phone was moved. Drive straight for two seconds above 20 km/h to set the heading of the car again.';
   if (!drift.calibrated) return 'Drive straight for two seconds above 20 km/h: the heading of the car is then taken from GPS.';
   if (drift.corrected) return 'Driving straight: heading corrected from GPS.';
   return drift.aided ? '' : 'Between GPS fixes the course is a guess until the car has changed speed or direction a few times.';
@@ -1082,6 +1189,11 @@ function renderDrift() {
   $('drift-gps').textContent = gps === null ? '--' : String(Math.round(gps));
   const car = wheelSpeed();
   $('drift-car').textContent = car === null ? '--' : String(Math.round(car * 3.6));
+  // Wheels that turn faster than the car moves, or slower: the tile says so and by how much.
+  const wheels = live && state.mode !== 'demo' ? state.wheels.at(state.clock.now()) : null;
+  const kind = wheels?.kind ?? '';
+  if ($('drift-car-tile').dataset.wheels !== kind) $('drift-car-tile').dataset.wheels = kind;
+  $('drift-slip').textContent = kind ? `wheels ${wheels.slipPct > 0 ? '+' : ''}${Math.round(wheels.slipPct)}%` : '';
   $('drift-turn').textContent = drift.yawRate === null ? '--' : String(Math.round(drift.yawRate));
   state.map.hint = position ? '' : live ? 'Waiting for a GPS position' : 'No position yet';
   $('drift-note').textContent = driftNote(drift, live, line);
@@ -1108,6 +1220,7 @@ function render(now) {
     renderLog();
     renderPhone();
     renderBattery();
+    renderAlarm();
   }
   if (state.view === 'drift') renderDrift();
   if (state.view === 'replay') state.replay.frame(now);
@@ -1181,6 +1294,13 @@ async function init() {
   $('save').addEventListener('click', save);
   $('share').addEventListener('click', share);
   $('clear').addEventListener('click', clear);
+  $('replay-this').addEventListener('click', () => {
+    showView('replay');
+    state.replay.openLog();
+    $('replay').scrollIntoView({ block: 'start' });
+  });
+  loadAlarm();
+  for (const id of ['alarm-coolant', 'alarm-sound']) $(id).addEventListener('change', saveAlarm);
   $('trace-copy').addEventListener('click', copyReport);
   $('trace-save').addEventListener('click', () => download(reportFile()));
   $('trace-share').addEventListener('click', () => shareFiles([reportFile()]));

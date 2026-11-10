@@ -23,6 +23,13 @@ test('temperatures are offset by 40', () => {
   assert.equal(decode(0x0f, [0x00]), -40);
 });
 
+test('oil and outside air use the same offset, the catalyst is in tenths', () => {
+  assert.equal(decode(0x5c, [0x94]), 108);
+  assert.equal(decode(0x46, [0x36]), 14);
+  assert.equal(decode(0x3c, [0x1a, 0x90]), 640);
+  assert.equal(decode(0x3c, [0x00, 0x00]), -40);
+});
+
 test('MAF is two bytes in hundredths', () => {
   assert.equal(decode(0x10, [0x0f, 0xa0]), 40);
 });
@@ -41,7 +48,7 @@ test('response length covers support and value PIDs', () => {
   assert.equal(responseLength(0xff), undefined);
 });
 
-test('fields match the Raspberry logger column order', () => {
+test('fields start with the Raspberry logger columns, the extra temperatures follow', () => {
   assert.deepEqual(FIELDS, [
     'timestamp_ms',
     'rpm',
@@ -53,6 +60,9 @@ test('fields match the Raspberry logger column order', () => {
     'intake_air_c',
     'maf_gs',
     'map_kpa',
+    'oil_c',
+    'ambient_c',
+    'catalyst_c',
   ]);
   assert.deepEqual(FIELDS.slice(1), [...FAST_PIDS, ...SLOW_PIDS].map((pid) => PIDS.get(pid).name));
 });

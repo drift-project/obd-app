@@ -89,6 +89,12 @@ export class ELM327Simulator {
         return word(Math.round((40 + 25 * wave) * 100));
       case 0x0b:
         return [Math.round(clamp(100 + 60 * wave, 0, 255))];
+      case 0x5c: // oil, warm after a few runs
+        return [108 + 40];
+      case 0x46:
+        return [14 + 40];
+      case 0x3c: // catalyst, in tenths of a degree above -40
+        return word((640 + 40) * 10);
       default:
         throw new RangeError(`no simulated value for PID ${hex(pid)}`);
     }

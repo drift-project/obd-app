@@ -1,8 +1,10 @@
 // OBD-II mode 01 PIDs read by the app (SAE J1979) and their decoders.
 //
-// Same PIDs, field names and column order as OBDPids.py in raspberry-unicore,
-// so a CSV from the phone and one from the Raspberry logger look alike.
-// Brake pressure and steering angle are not standard mode 01 PIDs.
+// The first ten columns are the PIDs, field names and column order of
+// OBDPids.py in raspberry-unicore, so a CSV from the phone and one from the
+// Raspberry logger start alike. The temperatures after them are read only
+// where the car reports them. Brake pressure and steering angle are not
+// standard mode 01 PIDs.
 
 const percent = (d) => Math.round((d[0] * 1000) / 255) / 10;
 const temperature = (d) => d[0] - 40;
@@ -16,7 +18,10 @@ export const PIDS = new Map([
   [0x0f, { name: 'intake_air_c', length: 1, unit: '°C', decode: temperature }],
   [0x10, { name: 'maf_gs', length: 2, unit: 'g/s', decode: (d) => (256 * d[0] + d[1]) / 100 }],
   [0x11, { name: 'throttle_pct', length: 1, unit: '%', decode: percent }],
+  [0x3c, { name: 'catalyst_c', length: 2, unit: '°C', decode: (d) => (256 * d[0] + d[1] - 400) / 10 }],
+  [0x46, { name: 'ambient_c', length: 1, unit: '°C', decode: temperature }],
   [0x49, { name: 'pedal_pct', length: 1, unit: '%', decode: percent }],
+  [0x5c, { name: 'oil_c', length: 1, unit: '°C', decode: temperature }],
 ]);
 
 // Supported-PID bitmaps: 0x00 covers 0x01-0x20, 0x20 covers 0x21-0x40, and so on.
@@ -26,7 +31,7 @@ export const SUPPORT_LENGTH = 4;
 // Polled every cycle: what the driver does and what the car answers with.
 export const FAST_PIDS = [0x0c, 0x0d, 0x11, 0x49];
 // Polled one at a time, round robin, at most once per slow interval.
-export const SLOW_PIDS = [0x04, 0x05, 0x0f, 0x10, 0x0b];
+export const SLOW_PIDS = [0x04, 0x05, 0x0f, 0x10, 0x0b, 0x5c, 0x46, 0x3c];
 
 // Fixed column order of logged rows. A value is null when the car does not
 // support the PID or it was not polled in that cycle.

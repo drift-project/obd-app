@@ -4,7 +4,8 @@ import { FIELDS } from './pids.js';
 
 export function toCsv(rows, fields = FIELDS) {
   const lines = [fields.join(',')];
-  for (const row of rows) lines.push(row.map((value) => value ?? '').join(','));
+  // Rows logged by an older version are shorter: their missing columns stay empty.
+  for (const row of rows) lines.push(fields.map((_, index) => row[index] ?? '').join(','));
   return `${lines.join('\r\n')}\r\n`;
 }
 

@@ -3,13 +3,13 @@
 import { fileName, toCsv } from './csv.js';
 import { ELM327, PROTOCOL_NAMES, protocolNumber } from './elm327.js';
 import { FIELDS } from './pids.js';
-import { run } from './poller.js';
+import { pidList, run } from './poller.js';
 import { ELM327Simulator, LoopbackTransport } from './simulator.js';
 import { RowStore } from './storage.js';
 import { Trace } from './trace.js';
 import { WebSerialTransport, pickPort } from './transports.js';
 
-const APP_VERSION = '0.2.2';
+const APP_VERSION = '0.2.3';
 const RPM_MAX = 8000;
 const REDLINE = 0.85;
 const FLUSH_MS = 1000; // a killed page loses at most about this much of the log
@@ -350,6 +350,7 @@ function reportText() {
     `Protocol: ${protocolText(info?.protocol)}`,
     `Voltage: ${info?.voltage || 'unknown'}`,
     `Signals: ${info?.supportedFields?.length ? info.supportedFields.join(', ') : 'unknown'}`,
+    `Car PIDs (mode 01): ${info?.supportedPids?.length ? pidList(info.supportedPids) : 'unknown'}`,
     `Request time: ${info?.requestMs ? `${info.requestMs} ms` : 'unknown'}`,
     `Rows in the log: ${activeRows().length}`,
     `Problems: ${info?.errors ?? 0}${info?.lastError ? `, last: ${info.lastError}` : ''}`,
@@ -430,8 +431,11 @@ function renderValues() {
   const supported = live ? new Set(state.info.supportedFields) : null;
   // While reconnecting the last values stay on screen, dimmed so they do not pass for live ones.
   document.querySelector('.dash').classList.toggle('stale', state.controller !== null && !live);
+  // Values only some cars have (oil, outside air, catalyst) take no room where the car lacks them.
+  const known = new Set(state.info?.supportedFields ?? []);
   for (const element of document.querySelectorAll('[data-field]')) {
     element.classList.toggle('unsupported', supported !== null && !supported.has(element.dataset.field));
+    if (element.classList.contains('optional')) element.hidden = !known.has(element.dataset.field);
   }
   for (const element of document.querySelectorAll('[data-value]')) {
     const field = element.dataset.value;

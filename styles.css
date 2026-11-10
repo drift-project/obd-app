@@ -275,25 +275,21 @@ small {
   font: 400 0.75rem/1 system-ui, sans-serif;
 }
 
-/* Five tiles as a row of three and a row of two, both full width. */
+/* Three tiles in a row; a shorter last row is stretched to the full width. */
 .tiles {
-  display: grid;
-  grid-template-columns: repeat(6, 1fr);
+  display: flex;
+  flex-wrap: wrap;
   gap: 10px;
   margin: 0;
 }
 
 .tile {
-  grid-column: span 2;
+  flex: 1 1 calc((100% - 20px) / 3);
   min-width: 0;
   padding: 10px 12px;
   border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--panel);
-}
-
-.tile:nth-child(n + 4) {
-  grid-column: span 3;
 }
 
 .tile dt {

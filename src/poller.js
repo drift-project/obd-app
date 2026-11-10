@@ -14,6 +14,9 @@ export const SUMMARY_INTERVAL_MS = 30000;
 
 const COLUMNS = [...FAST_PIDS, ...SLOW_PIDS];
 
+/** PIDs as the two-digit hex numbers used in OBD documentation: "04 05 0C". */
+export const pidList = (pids) => pids.map((pid) => pid.toString(16).toUpperCase().padStart(2, '0')).join(' ');
+
 /** One adapter session: fast PIDs every cycle, slow PIDs round robin. */
 export class OBDPoller {
   constructor(elm, { clock = Date.now, slowIntervalMs = SLOW_INTERVAL_MS } = {}) {
@@ -106,6 +109,7 @@ export async function run(
     protocol: '',
     voltage: '',
     fields: [],
+    pids: [],
     lastError: '',
     requestMs: null,
   };
@@ -122,6 +126,7 @@ export async function run(
       protocol: stats.protocol,
       voltage: stats.voltage,
       supportedFields: stats.fields,
+      supportedPids: stats.pids,
       rateHz: Math.round((rowsSinceStatus * 10000) / elapsedMs) / 10,
       requestMs: stats.requestMs,
       rows: stats.rows,
@@ -154,12 +159,15 @@ export async function run(
         protocol: elm.protocol,
         voltage: elm.voltage,
         fields: poller.supportedFields(),
+        pids: [...elm.supported].sort((a, b) => a - b),
         requestMs: null,
       });
       trace?.note(
         `connected: ${elm.version || 'unknown adapter'}, protocol ${elm.protocol || 'unknown'}, ` +
           `${elm.voltage || 'voltage unknown'}, signals: ${stats.fields.join(' ') || 'none'}`,
       );
+      // Everything the car offers, not only what this app reads: the answer to "can it give X?".
+      trace?.note(`the car reports ${stats.pids.length} mode 01 PIDs: ${pidList(stats.pids) || 'none'}`);
       backoffMs = 1000;
       report('connected');
 

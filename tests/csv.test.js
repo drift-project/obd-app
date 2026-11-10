@@ -4,24 +4,29 @@ import { test } from 'node:test';
 import { fileName, toCsv } from '../src/csv.js';
 import { FIELDS } from '../src/pids.js';
 
-test('CSV has the logger header, empty cells for missing values and CRLF lines', () => {
+const COLUMNS = ['timestamp_ms', 'rpm', 'speed_kmh', 'throttle_pct', 'coolant_c'];
+
+test('CSV has a header, empty cells for missing values and CRLF lines', () => {
   const rows = [
-    [1793916437268, 6454.75, 52, 86.7, 87.8, 83.9, null, null, null, null],
-    [1793916437339, 6412.5, 53, 83.9, 85.5, null, 92, null, null, null],
+    [1793916437268, 6454.75, 52, 86.7, null],
+    [1793916437339, 6412.5, 53, null, 92],
   ];
   assert.equal(
-    toCsv(rows),
-    [
-      FIELDS.join(','),
-      '1793916437268,6454.75,52,86.7,87.8,83.9,,,,',
-      '1793916437339,6412.5,53,83.9,85.5,,92,,,',
-      '',
-    ].join('\r\n'),
+    toCsv(rows, COLUMNS),
+    ['timestamp_ms,rpm,speed_kmh,throttle_pct,coolant_c', '1793916437268,6454.75,52,86.7,', '1793916437339,6412.5,53,,92', ''].join('\r\n'),
   );
 });
 
+test('the default header is the field list of the app', () => {
+  assert.equal(toCsv([]), `${FIELDS.join(',')}\r\n`);
+});
+
 test('a zero value is kept, not treated as missing', () => {
-  assert.equal(toCsv([[1, 0, 0, 0, 0, null, null, null, null, null]]).split('\r\n')[1], '1,0,0,0,0,,,,,');
+  assert.equal(toCsv([[1, 0, 0, 0, 0]], COLUMNS).split('\r\n')[1], '1,0,0,0,0');
+});
+
+test('a row logged before columns were added gets empty cells for them', () => {
+  assert.equal(toCsv([[1, 800, 0]], COLUMNS).split('\r\n')[1], '1,800,0,,');
 });
 
 test('file name follows the Raspberry logger pattern in local time', () => {

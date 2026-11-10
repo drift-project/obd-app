@@ -109,11 +109,13 @@ Strona musi być na wierzchu, z włączonym ekranem (aplikacja sama blokuje wyga
 
 ## Dane
 
-Kolumny CSV: `timestamp_ms, rpm, speed_kmh, throttle_pct, pedal_pct, engine_load_pct, coolant_c, intake_air_c, maf_gs, map_kpa`. Pusta komórka oznacza, że auto nie obsługuje danej wartości albo nie była czytana w tym cyklu (wartości silnika są czytane kolejno, jedna na sekundę).
+Kolumny CSV: `timestamp_ms, rpm, speed_kmh, throttle_pct, pedal_pct, engine_load_pct, coolant_c, intake_air_c, maf_gs, map_kpa, oil_c, ambient_c, catalyst_c`. Pierwsze dziesięć jest takie samo jak w loggerze na Raspberry. Pusta komórka oznacza, że auto nie obsługuje danej wartości albo nie była czytana w tym cyklu (wartości silnika i temperatury są czytane kolejno, jedna na sekundę).
+
+Temperatury oleju (`oil_c`), powietrza na zewnątrz (`ambient_c`) i katalizatora (`catalyst_c`) są w standardzie OBD2, ale zgłaszają je głównie nowsze auta. Kafelek na ekranie pojawia się tylko wtedy, gdy auto daną wartość ma.
 
 `timestamp_ms` to zegar telefonu w środku zapytania. Telefon synchronizuje zegar z siecią, więc dane da się zestawić z GNSS z urządzenia.
 
-Aplikacja pyta auto, które wartości obsługuje, i czyta tylko te. Listy zgłoszone przez różne sterowniki (silnik, skrzynia) są łączone. Na CAN szybkie dane idą jednym zapytaniem, o ile auto na to pozwala; na linii K zawsze po jednej wartości.
+Aplikacja pyta auto, które wartości obsługuje, i czyta tylko te. Pełna lista wartości zgłoszonych przez auto (także tych, których aplikacja nie czyta) jest w dzienniku diagnostycznym, w wierszu "the car reports N mode 01 PIDs". Listy zgłoszone przez różne sterowniki (silnik, skrzynia) są łączone. Na CAN szybkie dane idą jednym zapytaniem, o ile auto na to pozwala; na linii K zawsze po jednej wartości.
 
 ## Czego jeszcze nie ma
 

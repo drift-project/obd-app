@@ -214,3 +214,22 @@ test('a periodic note sums up the rate and the request time', async () => {
   const summary = trace.lines().map(withoutTime).find((line) => / rows in /.test(line));
   assert.match(summary, /^# \d+ rows in \d+ s \(\d+\.\d\/s\), \d+ ms per request$/);
 });
+
+test('everything the car reports is listed, not only what the app reads', async () => {
+  // An old K-line car: no pedal, no oil temperature, but timing advance (0E) and fuel trim (06).
+  const car = [0x04, 0x05, 0x06, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11];
+  const trace = new Trace();
+  const controller = new AbortController();
+  const statuses = [];
+  await run(() => quickElm(new LoopbackTransport(new ELM327Simulator({ busProtocol: '3', supported: car }))), {
+    signal: controller.signal,
+    sink: () => controller.abort(),
+    status: (info) => statuses.push(info),
+    trace,
+  });
+  const live = statuses.find((info) => info.phase === 'connected');
+  assert.deepEqual(live.supportedPids, car);
+  assert.deepEqual(live.supportedFields, ['rpm', 'speed_kmh', 'throttle_pct', 'engine_load_pct', 'coolant_c', 'intake_air_c', 'maf_gs']);
+  const note = trace.lines().map(withoutTime).find((line) => line.includes('mode 01 PIDs'));
+  assert.equal(note, '# the car reports 9 mode 01 PIDs: 04 05 06 0C 0D 0E 0F 10 11');
+});

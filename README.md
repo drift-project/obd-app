@@ -120,6 +120,7 @@ Razem z danymi auta aplikacja zapisuje czujniki telefonu. Zapis startuje sam po 
 | `phone_orientation` | ustawienie telefonu względem Ziemi (z kompasem), kwaternion | 60 Hz |
 | `phone_relative_orientation` | ustawienie telefonu bez kompasu, kwaternion | 60 Hz |
 | `phone_gps` | pozycja, wysokość, dokładność, kurs i prędkość | zwykle 1 Hz |
+| `phone_drift` | to, co pokazywał widok Drift: kierunek nadwozia, kurs, kąt driftu | 10 Hz |
 
 - **Częstotliwość.** 60 Hz dla czujników ruchu i 10 Hz dla magnetometru to granice Chrome dla stron WWW, nie samych czujników. Więcej da tylko aplikacja natywna.
 - **Magnetometr** jest w Chrome domyślnie wyłączony. Włącza go flaga `chrome://flags/#enable-generic-sensor-extra-classes`. Bez niej kompas i tak jest użyty w `phone_orientation`.
@@ -129,6 +130,29 @@ Razem z danymi auta aplikacja zapisuje czujniki telefonu. Zapis startuje sam po 
 - **Czas.** Każdy plik ma w pierwszej kolumnie `timestamp_ms` z jednego zegara: zegar telefonu jest odczytywany raz na starcie zapisu, a dalej liczy zegar monotoniczny, więc dane auta i telefonu da się zestawić. `phone_gps` ma dodatkowo `fix_ms`, czyli czas pomiaru podany przez odbiornik.
 
 Stan każdego czujnika (częstotliwość, liczba próbek albo powód braku) pokazuje sekcja **Phone sensors**. Do loga dołączany jest plik `log_info` z opisem plików i kolumn.
+
+## Widok Drift
+
+Przełącznik **Car / Drift** pod nagłówkiem zmienia licznik na mapę, wzorowaną na trybie analizy w `drifthing-ui`: ślad przejazdu, auto obrócone tak, jak stoi nadwozie, strzałka kierunku jazdy i odczyty na żywo.
+
+- **Drift angle**: kąt między kierunkiem nadwozia a kierunkiem jazdy, liczony jak w `middle-math` (kierunek nadwozia minus kurs, od -180 do 180 stopni). Litera obok mówi, w którą stronę od kierunku jazdy wskazuje nos: **R** w prawo, **L** w lewo.
+- **GPS** i **Car**: prędkość względem ziemi i prędkość kół z auta.
+- **Turn**: prędkość obrotu auta w stopniach na sekundę, dodatnia w prawo.
+
+Skąd bierze się kąt:
+
+- **Kierunek nadwozia** pochodzi z orientacji telefonu (żyroskop i akcelerometr). Telefon wie tylko, o ile się obrócił, więc punkt odniesienia bierze z GPS: gdy auto jedzie prosto przez dwie sekundy z prędkością powyżej około 20 km/h, kierunek nadwozia jest ustawiany na kurs z GPS. Ta kalibracja powtarza się sama na każdej prostej i usuwa pełzanie żyroskopu. Mocowanie telefonu może być dowolne, byle sztywne.
+- **Poślizg na wprost** nie jest brany za jazdę prosto: duża poprawka krótko po poprzedniej jest odrzucana, a gdy auto podaje prędkość kół, kalibracja czeka, aż zgodzi się ona z prędkością z GPS.
+- **Kierunek jazdy** podaje GPS, ale tylko raz na sekundę. Między pomiarami prędkość auta jest prowadzona dalej z akcelerometru. Ustawienie osi telefonu względem północy i opóźnienie pomiarów GPS aplikacja wyznacza sama z danych, po kilku zmianach prędkości albo kierunku. Do tego czasu kurs między pomiarami jest zgadywany i w ciasnych manewrach kąt może być chwilowo błędny o kilkanaście stopni.
+- **Ślad** ma dzięki temu punkty także między pomiarami GPS, więc łuki są gładkie.
+
+W symulacji z idealnymi czujnikami błąd kąta jest poniżej stopnia, z zaszumionymi średnio 1,5 stopnia i chwilowo do kilku stopni. Na prawdziwym aucie nie było to jeszcze mierzone. To nie zastąpi urządzenia z dwiema antenami RTK: jazda tyłem, długie obracanie w miejscu bez prostych i luźny uchwyt telefonu dają błędne wskazania.
+
+Mapa pobiera kafelki z serwera OpenStreetMap, więc otwarty widok Drift wysyła tam przybliżone położenie (numer kafelka). Sam ślad i dane nie są nigdzie wysyłane. Bez internetu mapa jest pusta, a ślad i auto są rysowane na siatce. Przyciski **+** i **-** zmieniają powiększenie.
+
+Tryb **Demo** pokazuje ten widok na wymyślonym przejeździe po ósemce (na starym pasie lotniska Tempelhof w Berlinie).
+
+To, co widok pokazywał, zapisuje się dziesięć razy na sekundę w pliku `phone_drift` (kierunek nadwozia, kurs, kąt driftu, prędkość obrotu, prędkość, pozycja i stan kalibracji), żeby dało się to sprawdzić po przejeździe.
 
 ## Dane
 
@@ -144,6 +168,7 @@ Aplikacja pyta auto, które wartości obsługuje, i czyta tylko te. Pełna lista
 
 - Odczyt z auta przeszedł pierwszy test (10.11.2026: BMW E39, adapter Vgate Scan, telefon z Androidem). Zapis czujników telefonu był sprawdzany tylko w Chrome na komputerze, z podstawionymi czujnikami i GPS; na prawdziwym telefonie jeszcze nie.
 - Dane nie są nigdzie wysyłane. Żeby trafiały do projektu, trzeba je dopiąć do brokera MQTT (przeglądarka potrzebuje do tego MQTT po WebSocket) albo wgrywać CSV.
+- Widok Drift i wyliczanie kąta driftu były sprawdzane tylko na symulowanym przejeździe, w testach i w Chrome na komputerze.
 - Hamulec i kąt skrętu kierownicy nie są standardowymi wartościami OBD2. Wymagają czytania surowych ramek konkretnego modelu auta, a w E39 protokołu BMW.
 
 ## Testy
@@ -152,7 +177,7 @@ Aplikacja pyta auto, które wartości obsługuje, i czyta tylko te. Pełna lista
 npm test
 ```
 
-Testy (Node 22, bez zależności) sprawdzają dekodowanie wartości, parsowanie odpowiedzi adaptera, sesję na symulatorze (CAN, linia K, klon odrzucający komendy, auto bez odpowiedzi, zawieszone szukanie protokołu), pętlę odczytu z ponownym łączeniem, dziennik diagnostyczny, transport Web Serial na podstawionym porcie, eksport CSV, listę plików do pracy bez serwera, service worker na podstawionym serwerze (start bez sieci, pobranie nowej wersji, wolny serwer), wybór portu adaptera, zapis czujników telefonu na podstawionych czujnikach i GPS, format próbek oraz archiwum ZIP (odczytywane niezależnym kodem).
+Testy (Node 22, bez zależności) sprawdzają dekodowanie wartości, parsowanie odpowiedzi adaptera, sesję na symulatorze (CAN, linia K, klon odrzucający komendy, auto bez odpowiedzi, zawieszone szukanie protokołu), pętlę odczytu z ponownym łączeniem, dziennik diagnostyczny, transport Web Serial na podstawionym porcie, eksport CSV, listę plików do pracy bez serwera, service worker na podstawionym serwerze (start bez sieci, pobranie nowej wersji, wolny serwer), wybór portu adaptera, zapis czujników telefonu na podstawionych czujnikach i GPS, format próbek, archiwum ZIP (odczytywane niezależnym kodem), arytmetykę mapy oraz kąt driftu na symulowanych przejazdach (dowolne mocowanie telefonu, opóźniony GPS, szum czujników, przerwa w danych).
 
 ## Pliki
 
@@ -160,6 +185,7 @@ Testy (Node 22, bez zależności) sprawdzają dekodowanie wartości, parsowanie 
 - `src/transports.js`: połączenie przez Web Serial. `src/simulator.js`: symulowany adapter i auto.
 - `src/trace.js`: dziennik diagnostyczny rozmowy z adapterem.
 - `src/sensors.js`: czujniki ruchu i GPS telefonu. `src/samples.js`: ich próbki i zapis do CSV.
+- `src/drift.js`: kierunek nadwozia, kurs i kąt driftu. `src/geo.js`, `src/map.js`: mapa. `src/demo-drive.js`: przejazd dla trybu Demo.
 - `src/app.js`, `index.html`, `styles.css`: ekran. `src/storage.js`, `src/csv.js`, `src/zip.js`: log i eksport.
 - `sw.js`, `manifest.webmanifest`: praca bez serwera, pobieranie nowej wersji i ikona na ekranie głównym. Nowy plik aplikacji trzeba dopisać do listy w `sw.js` (pilnuje tego test).
 - `.nojekyll`: GitHub Pages ma podawać pliki bez przetwarzania.

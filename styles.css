@@ -117,6 +117,34 @@ body {
   }
 }
 
+/* View switch ------------------------------------------------------------- */
+
+.views {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 0 16px 8px;
+}
+
+.view {
+  flex: 1;
+  min-height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--muted);
+  font: 600 0.9375rem/1 system-ui, sans-serif;
+  cursor: pointer;
+}
+
+.view[aria-pressed='true'] {
+  border-color: var(--blue);
+  background: var(--panel-2);
+  color: var(--text);
+}
+
 /* Layout ------------------------------------------------------------------ */
 
 main {
@@ -339,6 +367,179 @@ small {
 .dash.stale .bars,
 .dash.stale .tiles {
   opacity: 0.4;
+}
+
+/* Drift view -------------------------------------------------------------- */
+
+.drift {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+/* A faint grid shows the car moving where no map tile could be loaded. */
+.map {
+  position: relative;
+  height: min(56dvh, 560px);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background:
+    linear-gradient(#16212b 1px, transparent 1px) 0 0 / 64px 64px,
+    linear-gradient(90deg, #16212b 1px, transparent 1px) 0 0 / 64px 64px,
+    #0a1016;
+}
+
+.map-tiles,
+.map-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.map-tiles {
+  filter: brightness(0.82) saturate(0.85);
+}
+
+.map-tiles img {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 256px;
+  height: 256px;
+  max-width: none;
+  user-select: none;
+}
+
+.map-path {
+  fill: none;
+  stroke: var(--blue-deep);
+  stroke-width: 4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.map-body rect {
+  fill: var(--red);
+  stroke: #fff;
+  stroke-width: 1.5;
+}
+
+.map-glass {
+  fill: #2a0d0c;
+}
+
+/* Turned by the course alone: where the body points is not known yet. */
+.map-body.guessed rect {
+  fill: rgb(255 70 64 / 0.25);
+  stroke-dasharray: 3 3;
+}
+
+.map-course line {
+  stroke: var(--amber);
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+
+.map-course path {
+  fill: var(--amber);
+}
+
+.map-zoom {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: grid;
+  gap: 6px;
+}
+
+.map-zoom button {
+  width: 42px;
+  height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgb(5 9 14 / 0.85);
+  color: var(--text);
+  font: 600 1.375rem/1 system-ui, sans-serif;
+  cursor: pointer;
+}
+
+.map-hint {
+  position: absolute;
+  inset: 40% 16px auto;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9375rem;
+  text-align: center;
+}
+
+.map-hint:empty {
+  display: none;
+}
+
+.map-credit {
+  position: absolute;
+  right: 6px;
+  bottom: 4px;
+  margin: 0;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgb(5 9 14 / 0.75);
+  color: var(--muted);
+  font-size: 0.625rem;
+}
+
+/* Two by two on a phone, one row where there is room. */
+.drift-readouts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin: 0;
+}
+
+@media (min-width: 700px) {
+  .drift-readouts {
+    grid-template-columns: 1.5fr 1fr 1fr 1fr;
+  }
+}
+
+.drift-readouts > div {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+}
+
+.drift-readouts dt {
+  color: var(--muted);
+  font-size: 0.6875rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.drift-readouts dd {
+  margin: 4px 0 0;
+  font: italic 800 1.5rem/1.1 var(--display);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.drift-angle dd {
+  color: var(--blue);
+  font-size: 2rem;
+}
+
+.drift-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.drift-note:empty {
+  display: none;
 }
 
 /* Controls ---------------------------------------------------------------- */

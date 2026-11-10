@@ -2,7 +2,11 @@
 // with the motion sensors and the GPS of the phone recorded next to the car data.
 
 import { fileName, toCsv } from './csv.js';
+import { DEMO_START, demoDrive, demoPhone } from './demo-drive.js';
+import { DRIFT_STREAM, DriftEstimator } from './drift.js';
 import { ELM327, PROTOCOL_NAMES, protocolNumber } from './elm327.js';
+import { offsetBy } from './geo.js';
+import { TrackMap } from './map.js';
 import { FIELDS } from './pids.js';
 import { pidList, run } from './poller.js';
 import { SampleLog } from './samples.js';
@@ -13,7 +17,7 @@ import { Trace } from './trace.js';
 import { WebSerialTransport, pickPort } from './transports.js';
 import { zip } from './zip.js';
 
-const APP_VERSION = '0.3.0';
+const APP_VERSION = '0.4.0';
 const RPM_MAX = 8000;
 const REDLINE = 0.85;
 const FLUSH_MS = 1000; // a killed page loses at most about this much of the log
@@ -23,6 +27,12 @@ const SAVED_KEY = 'drifthing-obd-saved-rows';
 const TRACE_KEY = 'drifthing-obd-trace';
 const PROTOCOL_KEY = 'drifthing-obd-protocol';
 const ADAPTER_KEY = 'drifthing-obd-adapter-picked'; // '1' once an adapter was picked in the chooser
+const VIEW_KEY = 'drifthing-obd-view';
+const ZOOM_KEY = 'drifthing-obd-map-zoom';
+const DRIFT_LOG_MS = 100; // the drift stream is written ten times a second
+
+// Everything recorded from the phone: its sensors and what the drift view worked out from them.
+const LOG_STREAMS = [...STREAMS, DRIFT_STREAM];
 
 // What the Demo button simulates. "?car=kline" in the address shows an old
 // K-line car (one value per request, slow), "?car=silent" a car that never answers.
@@ -49,6 +59,7 @@ const state = {
   pending: [], // car rows not yet written to IndexedDB
   savedRows: 0, // how many car rows were already exported
   latest: new Map(),
+  latestAt: new Map(), // when each car value last arrived, on the page clock
   info: null, // status of the running session, or of the last one
   carInfo: null, // status of the last session with a real adapter
   progress: '', // what the connection attempt is doing right now
@@ -61,7 +72,12 @@ const state = {
   storeQueue: Promise.resolve(),
   dirty: true,
   clearTimer: null,
-  samples: new SampleLog(STREAMS), // phone sensor samples; kept in IndexedDB until cleared
+  samples: new SampleLog(LOG_STREAMS), // phone samples; kept in IndexedDB until cleared
+  view: 'car', // 'car' | 'drift'
+  map: null,
+  drift: new DriftEstimator(), // of the running session, or of the last one
+  attitudeFrom: null, // the orientation stream that feeds the drift estimator
+  demoDrive: null, // timer of the made-up drive behind the Demo button
   sampleStore: null,
   sensors: null, // the running PhoneSensors
   sensorStates: [], // what each sensor is doing, or did in the last session
@@ -155,12 +171,90 @@ function sessionClock() {
   return { now: () => offset + performance.now(), fromTicks: (ticks) => offset + ticks };
 }
 
-function onSample(name, values) {
-  state.samples.add(name, values);
+/** Speed of the car in m/s if it was read in the last few seconds, else null. */
+function wheelSpeed() {
+  const at = state.latestAt.get('speed_kmh');
+  const kmh = state.latest.get('speed_kmh');
+  if (at === undefined || typeof kmh !== 'number' || performance.now() - at > 2500) return null;
+  return kmh / 3.6;
+}
+
+/** Hand a sample to the drift estimator: attitude, acceleration without gravity or a position fix. */
+function feedDrift(name, values) {
   if (name === 'gps') {
     state.gps = values;
+    state.drift.fix(values[0], {
+      latitude: values[GPS.latitude_deg],
+      longitude: values[GPS.longitude_deg],
+      accuracy: values[GPS.accuracy_m],
+      course: values[GPS.heading_deg],
+      speed: values[GPS.speed_ms],
+      // The demo car and the demo drive are two separate inventions, so their speeds say nothing about each other.
+      wheelSpeed: state.mode === 'demo' ? null : wheelSpeed(),
+    });
     state.dirty = true;
+  } else if (name === 'linear_acceleration') {
+    state.drift.acceleration(values[0], values.slice(1));
+  } else if (name === 'relative_orientation' || (name === 'orientation' && state.attitudeFrom !== 'relative_orientation')) {
+    // The attitude without the compass is steadier in a car; the one with it is the fallback.
+    state.attitudeFrom ??= name;
+    if (state.attitudeFrom === name) state.drift.attitude(values[0], values.slice(1));
   }
+}
+
+function onSample(name, values) {
+  state.samples.add(name, values);
+  feedDrift(name, values);
+}
+
+/** Ten times a second: what the drift view shows goes into the log, so it can be checked later. */
+function logDrift() {
+  if (!state.sensors) return;
+  const now = state.clock.now();
+  const drift = state.drift.at(now);
+  state.samples.add('drift', [
+    now,
+    drift.heading,
+    drift.course,
+    drift.driftAngle,
+    drift.yawRate,
+    drift.speed,
+    drift.position?.latitude,
+    drift.position?.longitude,
+    drift.offset,
+    drift.calibrated ? 1 : 0,
+    drift.corrected ? 1 : 0,
+    drift.aided ? 1 : 0,
+    drift.gpsDelay,
+  ]);
+}
+
+// The demo drive reaches the drift view the way the phone sensors do, only nothing of it is recorded.
+const DEMO_GPS_DELAY_MS = 300;
+
+function startDemoDrive() {
+  const started = state.clock.now();
+  let fixes = 0;
+  const step = () => {
+    const now = state.clock.now();
+    const t = (now - started) / 1000;
+    const phone = demoPhone(demoDrive(t));
+    feedDrift('relative_orientation', [now, ...phone.attitude]);
+    feedDrift('linear_acceleration', [now, ...phone.acceleration]);
+    if (t < fixes) return;
+    fixes += 1;
+    // A fix once a second, and like a real one it describes a moment that has passed.
+    const then = demoDrive(t - DEMO_GPS_DELAY_MS / 1000);
+    const place = offsetBy(DEMO_START, then.east, then.north);
+    feedDrift('gps', [now, Date.now() - DEMO_GPS_DELAY_MS, place.latitude, place.longitude, null, 3, null, then.course, then.speed]);
+  };
+  state.demoDrive = setInterval(step, 16);
+}
+
+function stopDemoDrive() {
+  clearInterval(state.demoDrive);
+  state.demoDrive = null;
+  state.gps = null;
 }
 
 /** Speed over ground from the newest fix in km/h, or null when the phone gave none. */
@@ -246,8 +340,11 @@ function stopSensors() {
 function sink(row) {
   activeRows().push(row);
   if (state.mode === 'serial') state.pending.push(row);
+  const now = performance.now();
   for (let i = 1; i < FIELDS.length; i += 1) {
-    if (row[i] !== null) state.latest.set(FIELDS[i], row[i]);
+    if (row[i] === null) continue;
+    state.latest.set(FIELDS[i], row[i]);
+    state.latestAt.set(FIELDS[i], now);
   }
   state.dirty = true;
 }
@@ -312,8 +409,11 @@ function start(mode, makeElm = null) {
   }
   showNotice('');
   keepAwake(true);
-  // The demo car is made up, so nothing real is recorded next to it.
-  if (mode !== 'demo') startSensors();
+  state.drift = new DriftEstimator();
+  state.attitudeFrom = null;
+  // The demo car is made up, so nothing real is recorded next to it: it brings its own drive.
+  if (mode === 'demo') startDemoDrive();
+  else startSensors();
   if (mode === 'phone') state.trace.note('recording the phone sensors without the car');
   updateControls();
   const { signal } = state.controller;
@@ -329,6 +429,7 @@ function start(mode, makeElm = null) {
     })
     .finally(() => {
       stopSensors();
+      stopDemoDrive();
       state.mode = null;
       state.controller = null;
       state.latest.clear();
@@ -448,7 +549,7 @@ function logInfo(stamp, rows) {
     'Files:',
   ];
   if (rows) lines.push(`obd_data: ${rows} rows from the car over OBD2, one row per polling cycle.`);
-  for (const stream of STREAMS) {
+  for (const stream of LOG_STREAMS) {
     const samples = state.samples.count(stream.name);
     if (!samples) continue;
     const [first, last] = state.samples.range(stream.name);
@@ -474,7 +575,7 @@ function logEntries(stamp) {
   const demo = state.mode === 'demo';
   if (rows.length) entries.push({ name: fileName(stamp, demo ? 'obd_demo' : 'obd_data'), type: 'text/csv', data: toCsv(rows) });
   if (phoneSamples()) {
-    for (const { name } of STREAMS) {
+    for (const { name } of LOG_STREAMS) {
       const data = state.samples.csv(name);
       if (data) entries.push({ name: fileName(stamp, `phone_${name}`), type: 'text/csv', data });
     }
@@ -737,6 +838,55 @@ function renderPhone() {
   $('gps-speed').textContent = kmh === null ? '--' : String(Math.round(kmh));
 }
 
+// --- Drift view ------------------------------------------------------------------
+
+function showView(view) {
+  state.view = view === 'drift' ? 'drift' : 'car';
+  writeStored(VIEW_KEY, state.view);
+  $('drift').hidden = state.view !== 'drift';
+  document.querySelector('.dash').hidden = state.view !== 'car';
+  $('view-car').setAttribute('aria-pressed', String(state.view === 'car'));
+  $('view-drift').setAttribute('aria-pressed', String(state.view === 'drift'));
+  state.dirty = true;
+}
+
+function zoomMap(step) {
+  writeStored(ZOOM_KEY, String(state.map.zoomBy(step)));
+}
+
+const NO_DRIFT = { heading: null, course: null, driftAngle: null, yawRate: null, position: null, calibrated: false, corrected: false, aided: false };
+
+function driftNote(drift, live, line) {
+  if (!live) return line.length ? 'The line of the last drive. Start a recording to see the car move.' : 'Start a recording to see the car here.';
+  if (!drift.position) return 'Waiting for a GPS position.';
+  if (!state.attitudeFrom) return 'No orientation sensor yet: the car is turned along its course and there is no drift angle.';
+  if (!drift.calibrated) return 'Drive straight for two seconds above 20 km/h: the heading of the car is then taken from GPS.';
+  if (drift.corrected) return 'Driving straight: heading corrected from GPS.';
+  return drift.aided ? '' : 'Between GPS fixes the course is a guess until the car has changed speed or direction a few times.';
+}
+
+/** Drawn on every frame while the drift view is open, so the car moves smoothly. */
+function renderDrift() {
+  const live = state.sensors !== null || state.demoDrive !== null;
+  const drift = live ? state.drift.at(state.clock.now()) : NO_DRIFT;
+  const line = state.drift.path;
+  const last = line.at(-1);
+  const position = live ? drift.position : last ? { latitude: last[0], longitude: last[1] } : null;
+  state.map.draw({ position, points: line, heading: drift.heading, course: drift.course });
+
+  const angle = drift.driftAngle;
+  $('drift-angle').textContent = angle === null ? '--' : String(Math.round(Math.abs(angle)));
+  // Which side the nose points to, seen along the direction of travel.
+  $('drift-side').textContent = angle === null || Math.abs(angle) < 1 ? '°' : angle > 0 ? '° R' : '° L';
+  const gps = gpsSpeedKmh();
+  $('drift-gps').textContent = gps === null ? '--' : String(Math.round(gps));
+  const car = wheelSpeed();
+  $('drift-car').textContent = car === null ? '--' : String(Math.round(car * 3.6));
+  $('drift-turn').textContent = drift.yawRate === null ? '--' : String(Math.round(drift.yawRate));
+  $('map-hint').textContent = position ? '' : live ? 'Waiting for a GPS position' : 'No position yet';
+  $('drift-note').textContent = driftNote(drift, live, line);
+}
+
 /** The diagnostic log is redrawn only while it is open and only when it changed. */
 function renderTrace() {
   if (!$('diagnostics').open) return;
@@ -758,6 +908,7 @@ function render() {
     renderLog();
     renderPhone();
   }
+  if (state.view === 'drift') renderDrift();
   renderTrace();
   requestAnimationFrame(render);
 }
@@ -779,6 +930,15 @@ function buildPhoneList() {
 
 async function init() {
   buildPhoneList();
+  state.map = new TrackMap(
+    { view: $('map'), tiles: $('map-tiles'), path: $('map-path'), car: $('map-car'), body: $('map-body'), course: $('map-course') },
+    Number(readStored(ZOOM_KEY)),
+  );
+  $('view-car').addEventListener('click', () => showView('car'));
+  $('view-drift').addEventListener('click', () => showView('drift'));
+  $('zoom-in').addEventListener('click', () => zoomMap(1));
+  $('zoom-out').addEventListener('click', () => zoomMap(-1));
+  showView(readStored(VIEW_KEY));
   $('connect').addEventListener('click', () => connect());
   $('other').addEventListener('click', () => connect({ choose: true }));
   $('demo').addEventListener('click', startDemo);
@@ -821,6 +981,7 @@ async function init() {
 
   setInterval(flush, FLUSH_MS);
   setInterval(measureRates, 1000);
+  setInterval(logDrift, DRIFT_LOG_MS);
   setInterval(saveTrace, TRACE_SAVE_MS);
   addEventListener('pagehide', () => {
     flush();

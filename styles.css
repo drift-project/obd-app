@@ -403,9 +403,10 @@ small {
     #0a1016;
 }
 
-/* In 3D: sky down to the horizon, the ground below it. */
+/* In 3D: the ground, and on a view taller than a phone's a strip of sky above where it ends. The ground is a
+   middle tone like the pictures from the air: where two tiles far away meet, a hairline of it may show. */
 .map[data-mode='3d'] {
-  background: linear-gradient(#04080d 0, #1a3147 var(--horizon, 30%), #0c141b var(--horizon, 30%), #0a1016 100%);
+  background: linear-gradient(#0b1e30 0, #56748c var(--sky, 0px), #7b7f74 var(--sky, 0px));
 }
 
 /* The tiles are laid on the ground, which is turned and tilted as a whole; each tile is a layer of its own. */
@@ -450,15 +451,15 @@ small {
   pointer-events: none;
 }
 
-/* Haze over the far end of the ground in 3D. */
+/* In 3D, where the drawn ground ends inside the view: the sky above it and a little haze over the ground below. */
 .map-fog {
   position: absolute;
-  top: var(--horizon, 30%);
+  top: 0;
   right: 0;
   left: 0;
   display: none;
-  height: var(--haze, 120px);
-  background: linear-gradient(rgb(26 49 71) 0, rgb(26 49 71) var(--haze-solid, 30px), rgb(26 49 71 / 0) 100%);
+  height: var(--haze, 0px);
+  background: linear-gradient(#0b1e30 0, #56748c var(--sky, 0px), rgb(86 116 140 / 0) 100%);
   pointer-events: none;
 }
 

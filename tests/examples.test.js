@@ -12,6 +12,7 @@ import { driftTable } from '../src/drift-replay.js';
 import { powerTable } from '../src/engine.js';
 import { Recording, parseCsv, streamOf } from '../src/replay.js';
 import { findDrifts, summarize } from '../src/summary.js';
+import { BEFORE_DRIFT_MS, trimSpan } from '../src/trim.js';
 import { wheelSlip } from '../src/wheels.js';
 import { unzip } from '../src/zip.js';
 
@@ -51,6 +52,12 @@ function anglesWhileDriving(recording, id) {
 
 const middle = (sorted) => sorted[Math.floor(sorted.length / 2)];
 
+/** The stretch an example opens on, picked from the list: as the replay works it out. */
+function shownOf(file, { recording, wheels, drifts }) {
+  const { trim } = examples.find((example) => example.file === file);
+  return trimSpan(recording, trim, drifts, wheels.spans);
+}
+
 test('the list of examples names files that exist, each with a title', () => {
   assert.ok(examples.length >= 4);
   for (const { file, title, about } of examples) {
@@ -61,7 +68,8 @@ test('the list of examples names files that exist, each with a title', () => {
 });
 
 test('the road drive: the angle logged with the compass wandered, worked out again it stays near zero', async () => {
-  const { recorded, recording, wheels, drifts, totals } = await replayOf('drifthing_log_20261110_200914.zip');
+  const replay = await replayOf('drifthing_log_20261110_200914.zip');
+  const { recorded, recording, wheels, drifts, totals } = replay;
   assert.deepEqual(recorded.skipped, []);
   const logged = anglesWhileDriving(recording, 'drift_recorded.drift_angle_deg');
   const again = anglesWhileDriving(recording, 'drift.drift_angle_deg');
@@ -79,6 +87,10 @@ test('the road drive: the angle logged with the compass wandered, worked out aga
   assert.ok(recording.end - times.at(-1) > 3000, 'no angle in the last seconds');
   assert.ok(totals.distanceM > 3500 && totals.distanceM < 5000);
   assert.equal(totals.topRpm, 5411);
+  // Picked from the list it opens when the car sets off and ends where the phone was picked up.
+  const [from, to] = shownOf('drifthing_log_20261110_200914.zip', replay);
+  assert.ok(from - recording.start > 20000 && to < recording.end, `${from - recording.start} ms cut at the start`);
+  assert.ok(drifts.every((drift) => drift.from >= from && drift.to <= to));
 });
 
 // Since gravity is taken out of the accelerometer by the app (0.8.1) the direction of travel between fixes is
@@ -89,7 +101,8 @@ for (const [file, least] of [
   ['drifthing_log_20261110_203420.zip', { drifts: 6, spans: 8, best: [20, 40] }],
 ]) {
   test(`a drift run (${file}): slides with the wheels running ahead`, async () => {
-    const { recorded, recording, wheels, drifts, totals } = await replayOf(file);
+    const replay = await replayOf(file);
+    const { recorded, recording, wheels, drifts, totals } = replay;
     assert.deepEqual(recorded.skipped, []);
     assert.ok(drifts.length >= least.drifts, `${drifts.length} drifts`);
     assert.ok(wheels.spans.length >= least.spans, `${wheels.spans.length} wheel spans`);
@@ -107,5 +120,11 @@ for (const [file, least] of [
     const first = calibrated.indexOf(1);
     assert.ok(first > 0 && calibrated.subarray(first).every((value) => value === 1));
     assert.ok(recording.has('engine.power_hp'));
+    // Picked from the list it opens a second before the wheels first spin or the car first slides, keeps every
+    // drift and leaves out a good part of the waiting around.
+    const [from, to] = shownOf(file, replay);
+    assert.equal(from, Math.min(...[...drifts, ...wheels.spans].map((span) => span.from)) - BEFORE_DRIFT_MS);
+    assert.ok(drifts.every((drift) => drift.from >= from && drift.to <= to));
+    assert.ok(to - from < (recording.end - recording.start) * 0.9, `${to - from} ms of ${recording.end - recording.start}`);
   });
 }

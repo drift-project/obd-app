@@ -19,7 +19,10 @@ test('from behind, the camera sees the back and the roof of the car, not its fro
   assert.ok(seen.includes('cabin roof'));
   assert.ok(seen.includes('rear window'));
   assert.ok(!seen.includes('body front'));
-  assert.ok(!seen.includes('windscreen'));
+  // The camera looks down steeply enough to see the sloping windscreen beyond the roof, as from above, and
+  // draws it before the roof, which is nearer.
+  const order = faces.map(({ name }) => name);
+  assert.ok(seen.includes('windscreen') && order.indexOf('windscreen') < order.indexOf('cabin roof'));
   // The taillights are on the back.
   const back = faces.find(({ name }) => name === 'body back');
   assert.equal(back.lights.length, 2);

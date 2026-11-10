@@ -78,20 +78,40 @@ test('a point on the screen below the horizon leads back to the ground point dra
   }
   // Above the horizon there is no ground.
   assert.equal(toGround(cam, 195, cam.horizon - 5), null);
-  assert.ok(cam.horizon > 0 && cam.horizon < cam.carY);
+  assert.ok(cam.horizon < cam.carY);
 });
 
-test('the visible ground reaches from below the car to the haze, wider far away', () => {
+test('on a phone the ground fills the 3D view up to its top edge: no sky', () => {
+  for (const [width, height] of [[368, 336], [368, 471], [412, 512]]) {
+    const cam = camera({ width, height, tilted: true, bearing: 30 });
+    for (const x of [0, width / 2, width]) {
+      const ground = toGround(cam, x, 0);
+      assert.ok(ground, `${width}x${height}: ground at the top`);
+      assert.ok(inView(cam, ground.x, ground.y).ahead <= FAR_PX, `${width}x${height}: drawn up there`);
+    }
+  }
+});
+
+test('the visible ground reaches from below the car to the top of the view, or FAR_PX ahead', () => {
   const cam = camera({ ...VIEW, tilted: true, bearing: 90 });
   const corners = visibleGround(cam);
   assert.equal(corners.length, 4);
-  // Facing east: the far corners are about FAR_PX east of the car, the near ones a little west of it.
-  near(corners[2].x, FAR_PX, 1e-6);
-  near(corners[3].x, FAR_PX, 1e-6);
+  // The corners of the view, round from the bottom left.
+  for (const [index, [x, y]] of [[0, 470], [390, 470], [390, 0], [0, 0]].entries()) {
+    const screen = toScreen(cam, corners[index].x, corners[index].y);
+    near(screen.x, x, 1e-6, `corner ${index} x`);
+    near(screen.y, y, 1e-6, `corner ${index} y`);
+  }
+  // Facing east: the near corners are a little west of the car, the far ones well east of it.
   assert.ok(corners[0].x < 0 && corners[0].x > -300);
+  assert.ok(corners[2].x > 1000 && corners[2].x <= FAR_PX);
   const nearWidth = Math.abs(corners[1].y - corners[0].y);
   const farWidth = Math.abs(corners[2].y - corners[3].y);
   assert.ok(farWidth > 2 * nearWidth, `${farWidth} against ${nearWidth}`);
+  // A view so tall that its top would lie further away: there the ground ends FAR_PX ahead.
+  const tall = visibleGround(camera({ width: 390, height: 1000, tilted: true, bearing: 90 }));
+  near(tall[2].x, FAR_PX, 1e-6);
+  near(tall[3].x, FAR_PX, 1e-6);
   // Every corner of a flat view is a corner of the view.
   const flat = visibleGround(camera(VIEW));
   assert.deepEqual(flat, [
@@ -104,7 +124,7 @@ test('the visible ground reaches from below the car to the haze, wider far away'
 
 test('the CSS of the ground follows the same sums', () => {
   const tilted = groundCss(camera({ ...VIEW, tilted: true, bearing: 90 }), 1000, 2000);
-  assert.match(tilted.transform, /^translate3d\(195\.00px, 366\.60px, 0\) rotateX\(1\.04720rad\) rotateZ\(-1\.57080rad\) translate3d\(-1000\.00px, -2000\.00px, 0\)$/);
+  assert.match(tilted.transform, /^translate3d\(195\.00px, 366\.60px, 0\) rotateX\(0\.69813rad\) rotateZ\(-1\.57080rad\) translate3d\(-1000\.00px, -2000\.00px, 0\)$/);
   assert.equal(tilted.perspective, '423.00px');
   assert.equal(tilted.origin, '195.00px 366.60px');
   const flat = groundCss(camera(VIEW), 1000, 2000);

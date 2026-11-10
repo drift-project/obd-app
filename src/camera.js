@@ -15,8 +15,10 @@
 // `perspective` from above the place the car is drawn.
 
 const RADIANS = Math.PI / 180;
-export const TILT_DEG = 60;
-export const FAR_PX = 1100; // how far ahead the ground is drawn before the haze
+// Looking down steeply enough that on a phone the ground reaches the top of the view, without sky. On a taller
+// view the ground ends FAR_PX ahead, under a strip of sky.
+export const TILT_DEG = 40;
+export const FAR_PX = 2000; // how far ahead the ground is drawn at most
 const CAR_DOWN = 0.78; // how far down the view the car sits in 3D
 
 /**

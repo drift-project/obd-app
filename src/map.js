@@ -91,6 +91,7 @@ const LINE_PX = 4;
 const GRID_PX = 64;
 const AMBER = 'rgb(255, 181, 71)';
 const RADIANS = Math.PI / 180;
+const HAZE_PX = 24; // in 3D, under a strip of sky, the haze over the far ground thins out over this many pixels
 
 const wrap180 = (degrees) => ((((degrees + 180) % 360) + 360) % 360) - 180;
 const clampZoom = (zoom, otherwise) => Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Math.round(zoom) || otherwise));
@@ -557,12 +558,13 @@ export class TrackMap {
     this.#scene.style.perspective = css.perspective;
     this.#scene.style.perspectiveOrigin = css.origin;
     if (tilted) {
-      // Sky above the horizon, and haze that hides the far end of the ground and thins out towards the car.
+      // Where the drawn ground ends below the top of the view: sky down to there, and a little haze over the
+      // ground below it. On a phone the ground goes on above the top of the view, and there is neither.
       const ahead = toScreen(cam, Math.sin(cam.bearing * RADIANS) * cam.far, -Math.cos(cam.bearing * RADIANS) * cam.far);
-      const solid = Math.max((ahead?.y ?? cam.horizon) - cam.horizon + 8, 8);
-      this.#view.style.setProperty('--horizon', `${cam.horizon.toFixed(1)}px`);
-      this.#view.style.setProperty('--haze-solid', `${solid.toFixed(1)}px`);
-      this.#view.style.setProperty('--haze', `${(solid + 90).toFixed(1)}px`);
+      const edge = Math.max(ahead?.y ?? cam.horizon, cam.horizon);
+      const sky = edge > 0 ? edge + 8 : 0;
+      this.#view.style.setProperty('--sky', `${sky.toFixed(1)}px`);
+      this.#view.style.setProperty('--haze', `${(sky ? sky + HAZE_PX : 0).toFixed(1)}px`);
     }
 
     if (!this.#drawTiles(cam, center, zoom)) this.#paintGrid(ctx, cam, center);

@@ -9,6 +9,7 @@ import { powerTable } from './engine.js';
 import { Recording, parseCsv, skipGap, streamOf } from './replay.js';
 import { findDrifts, summarize } from './summary.js';
 import { trackOf } from './track.js';
+import { trimSpan, trimTables } from './trim.js';
 import { wheelSlip } from './wheels.js';
 import { unzip } from './zip.js';
 
@@ -85,6 +86,7 @@ export class ReplayView {
   #marks = []; // stretches shaded on the charts: where the wheels turned faster or slower than the car moved
   #dragging = false;
   #shown = new Map(); // element id -> the text it shows
+  #examples = new Map(); // file name -> what the list of examples says about it
 
   /**
    * `$` finds an element by its id and `map` is the TrackMap of this view.
@@ -151,6 +153,7 @@ export class ReplayView {
       const response = await fetch(`${EXAMPLES}index.json`);
       const examples = response.ok ? await response.json() : [];
       if (!Array.isArray(examples) || !examples.length) return;
+      for (const example of examples) this.#examples.set(example.file, example);
       const first = document.createElement('option');
       first.value = '';
       first.textContent = 'Example recordings…';
@@ -177,7 +180,7 @@ export class ReplayView {
       // Only names from the list, and only out of the examples folder.
       const response = await fetch(`${EXAMPLES}${encodeURIComponent(name)}`);
       if (!response.ok) throw new Error(`the server answered ${response.status}`);
-      await this.openFiles([new File([await response.blob()], name)]);
+      await this.openFiles([new File([await response.blob()], name)], { trim: this.#examples.get(name)?.trim });
     } catch (error) {
       this.#text('replay-info', `The example could not be fetched: ${error.message}.`);
     }
@@ -210,7 +213,7 @@ export class ReplayView {
   }
 
   /** Replay files saved or shared from the app: CSV files, or the ZIP archive that holds them. */
-  async openFiles(files) {
+  async openFiles(files, { trim = null } = {}) {
     const tables = [];
     const problems = [];
     const add = (name, text) => {
@@ -234,10 +237,10 @@ export class ReplayView {
         problems.push(`${file.name}: ${error.message}`);
       }
     }
-    this.#open(tables, files.length === 1 ? files[0].name : `${files.length} files`, problems);
+    this.#open(tables, files.length === 1 ? files[0].name : `${files.length} files`, problems, { trim });
   }
 
-  #open(tables, source, problems = []) {
+  #open(tables, source, problems = [], { trim = null } = {}) {
     const $ = this.#$;
     const recorded = new Recording(tables);
     let all = tables;
@@ -250,7 +253,19 @@ export class ReplayView {
     if (wheels) all = [...all, { stream: 'wheels', columns: wheels.columns, data: wheels.data }];
     const power = recorded.empty ? null : powerTable(recorded);
     if (power) all = [...all, { stream: 'engine', ...power }];
-    const recording = all === tables ? recorded : new Recording(all);
+    const whole = all === tables ? recorded : new Recording(all);
+    let recording = whole;
+    let trimmed = '';
+    if (trim && !recording.empty) {
+      // Everything above was worked out on the whole recording; only the part worth showing is shown.
+      const [from, to] = trimSpan(recording, trim, findDrifts(recording), wheels?.spans ?? []);
+      if (from > recording.start || to < recording.end) {
+        const why = trim === 'drifts' ? 'from a second before the wheels first spin or the car first slides' : 'while the car moves';
+        trimmed = ` Recorded ${clock(recording.start)} to ${clock(recording.end)}, shown ${why}.`;
+        recording = new Recording(trimTables(all, from, to));
+        if (wheels) wheels.spans = wheels.spans.filter((span) => span.to >= from && span.from <= to);
+      }
+    }
     for (const stream of recording.skipped) problems.push(`"${stream}" has no times in milliseconds in its first column`);
     const trouble = problems.length ? ` Left out: ${problems.join('; ')}.` : '';
     this.#play(false);
@@ -269,7 +284,7 @@ export class ReplayView {
     this.#breaks = this.#stretches.slice(1).map(([from]) => from);
     this.#cursor = recording.start;
     this.#marks = wheels ? wheels.spans : [];
-    this.#buildTrack();
+    this.#buildTrack(whole);
     let wanted = [];
     try {
       wanted = JSON.parse(this.#read(SIGNALS_KEY)) ?? [];
@@ -292,7 +307,7 @@ export class ReplayView {
     const placeless = this.#positions === null ? ' It has no positions, so there is no map.' : '';
     this.#text(
       'replay-info',
-      `${source}: ${clock(recording.start)} to ${clock(recording.end)}, ${recording.signals.length} signals${skipped}.${reworked}${placeless}${trouble}`,
+      `${source}: ${clock(recording.start)} to ${clock(recording.end)}, ${recording.signals.length} signals${skipped}.${trimmed}${reworked}${placeless}${trouble}`,
     );
     this.#text('replay-marks', this.#marksText(wheels));
     const drifts = findDrifts(recording);
@@ -401,19 +416,23 @@ export class ReplayView {
   /**
    * The driven line for the map, with the drift angle at each of its points for its colour. It goes through the
    * GPS fixes. The positions of the drift view are a second choice: during the drive they had to be guessed
-   * ahead of each fix, which leaves a jagged line.
+   * ahead of each fix, which leaves a jagged line. Of a recording that is shown cut short, `whole` is all of it:
+   * the line is smoothed through all its fixes, so the car is on the map from the first moment shown, and only
+   * the part shown is drawn.
    */
-  #buildTrack() {
+  #buildTrack(whole = this.#recording) {
     const recording = this.#recording;
     this.#positions = ['gps', 'drift'].find((stream) => recording.has(`${stream}.latitude_deg`) && recording.has(`${stream}.longitude_deg`)) ?? null;
     this.#track = [];
     this.#smooth = null;
     if (!this.#positions) return;
-    if (this.#positions === 'gps') this.#smooth = trackOf(recording);
+    if (this.#positions === 'gps') this.#smooth = trackOf(whole);
     if (this.#smooth) {
+      const shown = ([, , time]) => whole === recording || (time >= recording.start && time <= recording.end + GPS_LATE_MS);
       // Each point of the line carries the drift angle of the moment the car was there, for its colour.
       this.#track = this.#smooth
         .points(TRACK_POINTS)
+        .filter(shown)
         .map(([latitude, longitude, time]) => [latitude, longitude, recording.interpolateAngle('drift.drift_angle_deg', time - GPS_LATE_MS, DRIFT_HOLD_MS)]);
       return;
     }

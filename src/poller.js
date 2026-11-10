@@ -4,9 +4,13 @@ import { ELM327Error } from './elm327.js';
 import { FAST_PIDS, PIDS, SLOW_PIDS } from './pids.js';
 
 export const SLOW_INTERVAL_MS = 1000;
-export const RECONNECT_MAX_MS = 30000;
+// The driver is watching the screen, so the wait between attempts stays short.
+export const RECONNECT_MAX_MS = 8000;
 // A few seconds of "NO DATA" means ignition off or the adapter lost the bus.
 export const MAX_EMPTY_POLLS = 20;
+// The diagnostic log keeps the first polls of a connection in full, then only problems.
+export const QUIET_AFTER_POLLS = 20;
+export const SUMMARY_INTERVAL_MS = 30000;
 
 const COLUMNS = [...FAST_PIDS, ...SLOW_PIDS];
 
@@ -77,10 +81,34 @@ export function abortableSleep(ms, signal) {
 /**
  * Keep an adapter session alive until `signal` aborts, reconnecting with backoff.
  * `sink(row)` gets every row, `status(info)` gets phase changes and a periodic rate.
+ * `trace` (optional) records the adapter conversation and what happened to the session.
  */
-export async function run(makeElm, { signal, sink, status = () => {}, statusIntervalMs = 1000, sleep = abortableSleep, now = () => performance.now(), clock = Date.now } = {}) {
+export async function run(
+  makeElm,
+  {
+    signal,
+    sink,
+    status = () => {},
+    statusIntervalMs = 1000,
+    summaryIntervalMs = SUMMARY_INTERVAL_MS,
+    sleep = abortableSleep,
+    now = () => performance.now(),
+    clock = Date.now,
+    trace = null,
+  } = {},
+) {
   let backoffMs = 1000;
-  const stats = { rows: 0, errors: 0, connected: false, elmVersion: '', protocol: '', fields: [], lastError: '' };
+  const stats = {
+    rows: 0,
+    errors: 0,
+    connected: false,
+    elmVersion: '',
+    protocol: '',
+    voltage: '',
+    fields: [],
+    lastError: '',
+    requestMs: null,
+  };
   let lastStatus = now();
   let rowsSinceStatus = 0;
 
@@ -92,8 +120,10 @@ export async function run(makeElm, { signal, sink, status = () => {}, statusInte
       adapterConnected: stats.connected,
       elmVersion: stats.elmVersion,
       protocol: stats.protocol,
+      voltage: stats.voltage,
       supportedFields: stats.fields,
       rateHz: Math.round((rowsSinceStatus * 10000) / elapsedMs) / 10,
+      requestMs: stats.requestMs,
       rows: stats.rows,
       errors: stats.errors,
       lastError: stats.lastError,
@@ -103,10 +133,16 @@ export async function run(makeElm, { signal, sink, status = () => {}, statusInte
   };
 
   while (!signal.aborted) {
-    const poller = new OBDPoller(makeElm(), { clock });
+    const elm = makeElm();
+    if (trace) {
+      elm.trace ??= trace;
+      trace.quiet = false;
+      trace.note('connecting');
+    }
+    const poller = new OBDPoller(elm, { clock });
     // Closing the transport breaks a pending read, so disconnecting is immediate.
     const onAbort = () => {
-      poller.elm.close().catch(() => {});
+      elm.close().catch(() => {});
     };
     signal.addEventListener('abort', onAbort, { once: true });
     report('connecting');
@@ -114,18 +150,47 @@ export async function run(makeElm, { signal, sink, status = () => {}, statusInte
       await poller.connect();
       Object.assign(stats, {
         connected: true,
-        elmVersion: poller.elm.version,
-        protocol: poller.elm.protocol,
+        elmVersion: elm.version,
+        protocol: elm.protocol,
+        voltage: elm.voltage,
         fields: poller.supportedFields(),
+        requestMs: null,
       });
+      trace?.note(
+        `connected: ${elm.version || 'unknown adapter'}, protocol ${elm.protocol || 'unknown'}, ` +
+          `${elm.voltage || 'voltage unknown'}, signals: ${stats.fields.join(' ') || 'none'}`,
+      );
       backoffMs = 1000;
       report('connected');
+
+      // Request time is measured over the polling only; the slow setup would skew it.
+      const setup = { ...elm.stats };
+      const requestMs = () => {
+        const requests = elm.stats.requests - setup.requests;
+        return requests > 0 ? Math.round((elm.stats.busyMs - setup.busyMs) / requests) : null;
+      };
+      let polls = 0;
+      let summaryAt = now();
+      let summaryRows = 0;
       while (!signal.aborted) {
         const row = await poller.poll();
         if (signal.aborted) break;
         sink(row);
         stats.rows += 1;
         rowsSinceStatus += 1;
+        summaryRows += 1;
+        polls += 1;
+        stats.requestMs = requestMs();
+        if (trace && polls === QUIET_AFTER_POLLS) {
+          trace.note('polling is steady: from here only problems are logged, with the exchanges before them');
+          trace.quiet = true;
+        }
+        if (trace && now() - summaryAt >= summaryIntervalMs) {
+          const seconds = (now() - summaryAt) / 1000;
+          trace.note(`${summaryRows} rows in ${seconds.toFixed(0)} s (${(summaryRows / seconds).toFixed(1)}/s), ${stats.requestMs} ms per request`);
+          summaryAt = now();
+          summaryRows = 0;
+        }
         if (now() - lastStatus >= statusIntervalMs) report('connected');
         if (!poller.fast.length) await sleep(500, signal); // nothing fast to read: do not spin
       }
@@ -133,6 +198,7 @@ export async function run(makeElm, { signal, sink, status = () => {}, statusInte
       if (!signal.aborted) {
         stats.errors += 1;
         stats.lastError = error?.message || String(error);
+        trace?.problem(stats.lastError);
         // A lost link is expected and only reported in the status; a bug should be loud.
         if (error instanceof TypeError || error instanceof ReferenceError || error instanceof RangeError) {
           console.error('OBD session failed:', error);
@@ -140,13 +206,18 @@ export async function run(makeElm, { signal, sink, status = () => {}, statusInte
       }
     } finally {
       signal.removeEventListener('abort', onAbort);
-      await poller.elm.close().catch(() => {});
+      await elm.close().catch(() => {});
       stats.connected = false;
     }
     if (signal.aborted) break;
     report('reconnecting');
+    trace?.note(`next attempt in ${backoffMs / 1000} s`);
     await sleep(backoffMs, signal);
     backoffMs = Math.min(backoffMs * 2, RECONNECT_MAX_MS);
+  }
+  if (trace) {
+    trace.quiet = false;
+    trace.note(`stopped after ${stats.rows} rows and ${stats.errors} problems`);
   }
   report('idle');
 }

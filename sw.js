@@ -2,7 +2,7 @@
 // the machine it was loaded from. Network first, so a reachable server always
 // wins; the cache answers when the request fails or takes too long.
 
-const CACHE = 'drifthing-obd-v1';
+const CACHE = 'drifthing-obd-v2';
 const NETWORK_TIMEOUT_MS = 2500;
 const ASSETS = [
   './',
@@ -16,6 +16,7 @@ const ASSETS = [
   'src/poller.js',
   'src/simulator.js',
   'src/storage.js',
+  'src/trace.js',
   'src/transports.js',
   'assets/logo.svg',
   'assets/icon.svg',

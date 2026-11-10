@@ -24,6 +24,7 @@
 
   <main>
     <p id="notice" class="notice" hidden></p>
+    <p id="progress" class="progress" aria-live="polite" hidden></p>
 
     <section class="dash" aria-label="Live car data">
       <div class="gauge" data-field="rpm">
@@ -91,14 +92,29 @@
       <dl>
         <div><dt>Adapter</dt><dd id="info-version">--</dd></div>
         <div><dt>Protocol</dt><dd id="info-protocol">--</dd></div>
+        <div><dt>Voltage</dt><dd id="info-voltage">--</dd></div>
+        <div><dt>One request</dt><dd id="info-request">--</dd></div>
         <div><dt>Signals</dt><dd id="info-signals">--</dd></div>
-        <div><dt>Errors</dt><dd id="info-errors">0</dd></div>
-        <div><dt>Last error</dt><dd id="info-last-error">--</dd></div>
+        <div><dt>Problems</dt><dd id="info-errors">0</dd></div>
+        <div><dt>Last problem</dt><dd id="info-last-error">--</dd></div>
         <div><dt>Log storage</dt><dd id="info-storage">--</dd></div>
       </dl>
     </details>
+
+    <details id="diagnostics" class="adapter">
+      <summary>Diagnostic log</summary>
+      <div class="diagnostics">
+        <p>Everything said between the app and the adapter. If the car does not connect, send this.</p>
+        <div class="log-actions">
+          <button id="trace-share" class="button" type="button" hidden>Share</button>
+          <button id="trace-copy" class="button" type="button">Copy</button>
+          <button id="trace-save" class="button" type="button">Save</button>
+        </div>
+        <pre id="trace-text" class="trace" tabindex="0"></pre>
+      </div>
+    </details>
   </main>
 
-  <footer class="footer">DRIFThing OBD 0.1.0. Keep the screen on and this page in front while driving.</footer>
+  <footer class="footer">DRIFThing OBD <span id="app-version"></span>. Keep the screen on and this page in front while driving.</footer>
 </body>
 </html>

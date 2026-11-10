@@ -1,30 +1,30 @@
 // DRIFThing OBD: live dashboard and logger for an ELM327 adapter over Web Serial.
 
 import { fileName, toCsv } from './csv.js';
-import { ELM327 } from './elm327.js';
+import { ELM327, PROTOCOL_NAMES, protocolNumber } from './elm327.js';
 import { FIELDS } from './pids.js';
 import { run } from './poller.js';
 import { ELM327Simulator, LoopbackTransport } from './simulator.js';
 import { RowStore } from './storage.js';
+import { Trace } from './trace.js';
 import { WebSerialTransport } from './transports.js';
 
+const APP_VERSION = '0.2.0';
 const RPM_MAX = 8000;
 const REDLINE = 0.85;
 const FLUSH_MS = 1000; // a killed page loses at most about this much of the log
+const TRACE_SAVE_MS = 3000;
+const TRACE_LINES_SHOWN = 300;
 const SAVED_KEY = 'drifthing-obd-saved-rows';
+const TRACE_KEY = 'drifthing-obd-trace';
+const PROTOCOL_KEY = 'drifthing-obd-protocol';
 
-// Second character of the ATDPN answer (the first is "A" when found automatically).
-const PROTOCOLS = {
-  1: 'SAE J1850 PWM',
-  2: 'SAE J1850 VPW',
-  3: 'ISO 9141-2',
-  4: 'ISO 14230-4 KWP (5 baud init)',
-  5: 'ISO 14230-4 KWP (fast init)',
-  6: 'CAN 11-bit, 500 kbaud',
-  7: 'CAN 29-bit, 500 kbaud',
-  8: 'CAN 11-bit, 250 kbaud',
-  9: 'CAN 29-bit, 250 kbaud',
-  A: 'SAE J1939 CAN',
+// What the Demo button simulates. "?car=kline" in the address shows an old
+// K-line car (one value per request, slow), "?car=silent" a car that never answers.
+const DEMO_CARS = {
+  can: { car: {}, latencyMs: 40 },
+  kline: { car: { busProtocol: '3', supported: [0x04, 0x05, 0x0c, 0x0d, 0x0f, 0x10, 0x11] }, latencyMs: 140 },
+  silent: { car: { busProtocol: null }, latencyMs: 300 },
 };
 
 const FORMAT = {
@@ -43,7 +43,14 @@ const state = {
   pending: [], // car rows not yet written to IndexedDB
   savedRows: 0, // how many car rows were already exported
   latest: new Map(),
-  info: null,
+  info: null, // status of the running session, or of the last one
+  carInfo: null, // status of the last session with a real adapter
+  progress: '', // what the connection attempt is doing right now
+  protocol: '', // protocol number that worked last time; tried first
+  trace: new Trace(), // conversation with the real adapter; survives reloads
+  demoTrace: new Trace({ size: 500 }), // demo conversation; memory only
+  traceSaved: -1,
+  traceShown: '',
   store: null,
   storeQueue: Promise.resolve(),
   dirty: true,
@@ -51,6 +58,7 @@ const state = {
 };
 
 const activeRows = () => (state.mode === 'demo' ? state.demoRows : state.rows);
+const activeTrace = () => (state.mode === 'demo' ? state.demoTrace : state.trace);
 
 // --- Storage -------------------------------------------------------------------
 
@@ -66,23 +74,41 @@ function flush() {
   enqueue(() => state.store.append(batch));
 }
 
-function readSavedRows() {
+function readStored(key) {
   try {
-    return Number(localStorage.getItem(SAVED_KEY)) || 0;
+    return localStorage.getItem(key);
   } catch {
-    return 0;
+    return null;
+  }
+}
+
+function writeStored(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // Full or blocked storage: these values are conveniences, the app works without them.
   }
 }
 
 function markSaved() {
   if (state.mode === 'demo') return;
   state.savedRows = state.rows.length;
-  try {
-    localStorage.setItem(SAVED_KEY, String(state.savedRows));
-  } catch {
-    // The counter is a convenience; the rows themselves live in IndexedDB.
-  }
+  writeStored(SAVED_KEY, String(state.savedRows));
   state.dirty = true;
+}
+
+function loadTrace() {
+  try {
+    state.trace.load(JSON.parse(readStored(TRACE_KEY)));
+  } catch {
+    // A damaged copy of the diagnostic log is not worth stopping for.
+  }
+}
+
+function saveTrace() {
+  if (state.trace.revision === state.traceSaved) return;
+  state.traceSaved = state.trace.revision;
+  writeStored(TRACE_KEY, JSON.stringify(state.trace));
 }
 
 // --- Session ---------------------------------------------------------------------
@@ -98,14 +124,46 @@ function sink(row) {
 
 /** What went wrong, in words a driver can act on. */
 function problemText(error) {
-  if (/UNABLETOCONNECT|NO DATA|no data for/i.test(error)) return 'The adapter answers but the car does not. Is the ignition on?';
+  if (/car did not answer|no data for/i.test(error)) {
+    return (
+      'The adapter answers but the car does not. Turn the ignition on, best with the engine running. ' +
+      'If it is on, this adapter may not speak the protocol of the car, or the car has no standard OBD2 data: ' +
+      'share the diagnostic log below.'
+    );
+  }
+  if (/cannot open the adapter link/i.test(error)) {
+    return 'Cannot reach the adapter. Check that it is plugged in with its light on, paired with this phone and not in use by another app.';
+  }
+  if (/no answer within/i.test(error)) {
+    return 'The link is open but the adapter is silent. Unplug it, plug it back in and wait a few seconds.';
+  }
   return `Adapter problem: ${error.replace(/\.$/, '')}.`;
+}
+
+function rememberProtocol(code) {
+  const number = protocolNumber(code);
+  if (state.mode !== 'serial' || !PROTOCOL_NAMES[number] || number === state.protocol) return;
+  state.protocol = number;
+  writeStored(PROTOCOL_KEY, number);
 }
 
 function onStatus(info) {
   state.info = info;
-  if (info.phase === 'connected') showNotice('');
-  if (info.phase === 'reconnecting') showNotice(`${problemText(info.lastError)} Retrying…`);
+  if (state.mode === 'serial') state.carInfo = info;
+  if (info.phase === 'connected') {
+    showNotice('');
+    state.progress = '';
+    rememberProtocol(info.protocol);
+  }
+  if (info.phase === 'reconnecting') {
+    state.progress = '';
+    showNotice(`${problemText(info.lastError)} Retrying…`);
+  }
+  state.dirty = true;
+}
+
+function onProgress(text) {
+  state.progress = text;
   state.dirty = true;
 }
 
@@ -114,38 +172,68 @@ function start(mode, makeElm) {
   state.mode = mode;
   state.controller = new AbortController();
   state.latest.clear();
-  if (mode === 'demo') state.demoRows = [];
+  state.progress = '';
+  if (mode === 'demo') {
+    state.demoRows = [];
+    state.demoTrace.clear();
+  }
   showNotice('');
   keepAwake(true);
   updateControls();
-  run(makeElm, { signal: state.controller.signal, sink, status: onStatus })
-    .catch((error) => showNotice(`The session stopped: ${error.message}`))
+  run(makeElm, { signal: state.controller.signal, sink, status: onStatus, trace: activeTrace() })
+    .catch((error) => {
+      activeTrace().problem(`the session stopped: ${error.message}`);
+      showNotice(`The session stopped: ${error.message}`);
+    })
     .finally(() => {
       state.mode = null;
       state.controller = null;
       state.latest.clear();
+      state.progress = '';
       flush();
+      saveTrace();
       keepAwake(false);
       updateControls();
       state.dirty = true;
     });
 }
 
+const hex4 = (value) => (value ?? 0).toString(16).padStart(4, '0');
+
+function portText(port) {
+  const info = port.getInfo?.() ?? {};
+  if (info.bluetoothServiceClassId) return `Bluetooth serial port (service ${info.bluetoothServiceClassId})`;
+  if (info.usbVendorId !== undefined) return `USB serial port ${hex4(info.usbVendorId)}:${hex4(info.usbProductId)}`;
+  return 'serial port';
+}
+
 async function connect({ choose = false } = {}) {
   try {
     let port = null;
     if (!choose) [port] = await navigator.serial.getPorts();
+    const remembered = port !== undefined && port !== null;
     port ??= await navigator.serial.requestPort();
-    start('serial', () => new ELM327(new WebSerialTransport(port)));
+    state.trace.note(`${remembered ? 'remembered' : 'picked'} adapter: ${portText(port)}`);
+    start('serial', () => new ELM327(new WebSerialTransport(port), { preferredProtocol: state.protocol, onProgress }));
   } catch (error) {
-    // NotFoundError: the chooser was closed without picking a device.
-    if (error.name !== 'NotFoundError') showNotice(`Could not open the adapter: ${error.message}`);
+    if (error.name === 'NotFoundError') {
+      // The chooser was closed without picking a device.
+      state.trace.note('no adapter was picked');
+      showNotice(
+        'No adapter was picked. If the list was empty, pair the adapter first in the Bluetooth settings of the phone ' +
+          '(PIN 1234 or 0000) while it is plugged into the car.',
+      );
+      return;
+    }
+    state.trace.problem(`could not get the adapter: ${error.message}`);
+    showNotice(`Could not open the adapter: ${error.message}`);
   }
 }
 
 function startDemo() {
-  const simulator = new ELM327Simulator();
-  start('demo', () => new ELM327(new LoopbackTransport(simulator, { latencyMs: 40 })));
+  const { car, latencyMs } = DEMO_CARS[new URLSearchParams(location.search).get('car')] ?? DEMO_CARS.can;
+  const simulator = new ELM327Simulator(car);
+  start('demo', () => new ELM327(new LoopbackTransport(simulator, { latencyMs }), { onProgress }));
 }
 
 function disconnect() {
@@ -173,13 +261,7 @@ async function keepAwake(on) {
 
 // --- Export ----------------------------------------------------------------------
 
-function exportFile() {
-  const prefix = state.mode === 'demo' ? 'obd_demo' : 'obd_data';
-  return new File([toCsv(activeRows())], fileName(new Date(), prefix), { type: 'text/csv' });
-}
-
-function save() {
-  const file = exportFile();
+function download(file) {
   const url = URL.createObjectURL(file);
   const link = document.createElement('a');
   link.href = url;
@@ -188,17 +270,33 @@ function save() {
   link.click();
   link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+/** Hand a file to the system share sheet; true when it was shared. */
+async function shareFile(file) {
+  try {
+    await navigator.share({ files: [file], title: file.name });
+    return true;
+  } catch (error) {
+    if (error.name !== 'AbortError') showNotice(`Sharing failed: ${error.message}`);
+    return false;
+  }
+}
+
+const canShare = (name, type) => Boolean(navigator.canShare?.({ files: [new File(['x'], name, { type })] }));
+
+function exportFile() {
+  const prefix = state.mode === 'demo' ? 'obd_demo' : 'obd_data';
+  return new File([toCsv(activeRows())], fileName(new Date(), prefix), { type: 'text/csv' });
+}
+
+function save() {
+  download(exportFile());
   markSaved();
 }
 
 async function share() {
-  const file = exportFile();
-  try {
-    await navigator.share({ files: [file], title: file.name });
-    markSaved();
-  } catch (error) {
-    if (error.name !== 'AbortError') showNotice(`Sharing failed: ${error.message}`);
-  }
+  if (await shareFile(exportFile())) markSaved();
 }
 
 function disarmClear() {
@@ -226,6 +324,57 @@ function clear() {
     markSaved();
   }
   state.dirty = true;
+}
+
+// --- Diagnostic report -------------------------------------------------------------
+
+function protocolText(code) {
+  if (!code) return '--';
+  const name = PROTOCOL_NAMES[protocolNumber(code)];
+  return name ? `${name} (${code})` : code;
+}
+
+/** Everything needed to tell from a distance why a car did or did not connect. */
+function reportText() {
+  const demo = state.mode === 'demo';
+  const info = demo ? state.info : state.carInfo;
+  return [
+    `DRIFThing OBD ${APP_VERSION} report${demo ? ' (DEMO: simulated car)' : ''}`,
+    `Written: ${new Date().toString()}`,
+    `Browser: ${navigator.userAgent}`,
+    `Web Serial: ${hasSerial ? 'available' : 'missing'}`,
+    `Adapter: ${info?.elmVersion || 'unknown'}`,
+    `Protocol: ${protocolText(info?.protocol)}`,
+    `Voltage: ${info?.voltage || 'unknown'}`,
+    `Signals: ${info?.supportedFields?.length ? info.supportedFields.join(', ') : 'unknown'}`,
+    `Request time: ${info?.requestMs ? `${info.requestMs} ms` : 'unknown'}`,
+    `Rows in the log: ${activeRows().length}`,
+    `Problems: ${info?.errors ?? 0}${info?.lastError ? `, last: ${info.lastError}` : ''}`,
+    '',
+    'Conversation with the adapter, newest last (> sent, < received, # note, ! problem):',
+    activeTrace().text() || '(nothing yet)',
+    '',
+  ].join('\n');
+}
+
+const reportFile = () => new File([reportText()], fileName(new Date(), 'obd_report', 'txt'), { type: 'text/plain' });
+
+function flash(button, text) {
+  const label = button.dataset.label ?? button.textContent;
+  button.dataset.label = label;
+  button.textContent = text;
+  setTimeout(() => {
+    button.textContent = label;
+  }, 1500);
+}
+
+async function copyReport() {
+  try {
+    await navigator.clipboard.writeText(reportText());
+    flash($('trace-copy'), 'Copied');
+  } catch (error) {
+    showNotice(`Copying failed (${error.message}). Use Save instead.`);
+  }
 }
 
 // --- Rendering -------------------------------------------------------------------
@@ -257,12 +406,6 @@ function statusText(info) {
   if (info.phase === 'reconnecting') return 'Reconnecting…';
   const prefix = state.mode === 'demo' ? 'Demo' : 'Connected';
   return `${prefix} · ${info.rateHz.toFixed(1)} Hz`;
-}
-
-function protocolText(code) {
-  if (!code) return '--';
-  const name = PROTOCOLS[code.at(-1)];
-  return name ? `${name} (${code})` : code;
 }
 
 const two = (value) => String(value).padStart(2, '0');
@@ -307,8 +450,12 @@ function renderInfo() {
   const info = state.info;
   $('status').dataset.phase = info?.phase ?? 'idle';
   $('status').textContent = statusText(info);
+  $('progress').textContent = state.progress ? `${state.progress}…` : '';
+  $('progress').hidden = !state.progress;
   $('info-version').textContent = info?.elmVersion || '--';
   $('info-protocol').textContent = protocolText(info?.protocol);
+  $('info-voltage').textContent = info?.voltage || '--';
+  $('info-request').textContent = info?.requestMs ? `${info.requestMs} ms` : '--';
   $('info-signals').textContent = info?.supportedFields?.length ? info.supportedFields.join(', ') : '--';
   $('info-errors').textContent = String(info?.errors ?? 0);
   $('info-last-error').textContent = info?.lastError || '--';
@@ -324,6 +471,19 @@ function renderLog() {
   if (rows.length === 0 && state.clearTimer) disarmClear();
 }
 
+/** The diagnostic log is redrawn only while it is open and only when it changed. */
+function renderTrace() {
+  if (!$('diagnostics').open) return;
+  const trace = activeTrace();
+  const key = `${state.mode === 'demo' ? 'demo' : 'car'}:${trace.revision}`;
+  if (key === state.traceShown) return;
+  state.traceShown = key;
+  const view = $('trace-text');
+  const atEnd = view.scrollHeight - view.scrollTop - view.clientHeight < 24;
+  view.textContent = trace.length ? trace.text(TRACE_LINES_SHOWN) : 'Nothing yet. Connect the adapter and the conversation shows up here.';
+  if (atEnd) view.scrollTop = view.scrollHeight;
+}
+
 function render() {
   if (state.dirty) {
     state.dirty = false;
@@ -331,6 +491,7 @@ function render() {
     renderInfo();
     renderLog();
   }
+  renderTrace();
   requestAnimationFrame(render);
 }
 
@@ -344,9 +505,16 @@ async function init() {
   $('save').addEventListener('click', save);
   $('share').addEventListener('click', share);
   $('clear').addEventListener('click', clear);
+  $('trace-copy').addEventListener('click', copyReport);
+  $('trace-save').addEventListener('click', () => download(reportFile()));
+  $('trace-share').addEventListener('click', () => shareFile(reportFile()));
+  $('diagnostics').addEventListener('toggle', () => {
+    state.traceShown = '';
+  });
 
-  const probe = new File(['x'], 'probe.csv', { type: 'text/csv' });
-  $('share').hidden = !navigator.canShare?.({ files: [probe] });
+  $('share').hidden = !canShare('probe.csv', 'text/csv');
+  $('trace-share').hidden = !canShare('probe.txt', 'text/plain');
+  $('app-version').textContent = APP_VERSION;
 
   if (!hasSerial) {
     showNotice(
@@ -354,15 +522,29 @@ async function init() {
     );
   }
 
+  loadTrace();
+  state.trace.note(`app ${APP_VERSION} started on ${new Date().toDateString()}, Web Serial ${hasSerial ? 'available' : 'missing'}`);
+  state.protocol = PROTOCOL_NAMES[readStored(PROTOCOL_KEY)] ? readStored(PROTOCOL_KEY) : '';
+
   state.store = await RowStore.create();
   state.rows = await state.store.load().catch(() => []);
-  state.savedRows = Math.min(readSavedRows(), state.rows.length);
-  $('info-storage').textContent = state.store.persistent ? 'Saved on this device until cleared' : 'Memory only: save before closing the page';
+  state.savedRows = Math.min(Number(readStored(SAVED_KEY)) || 0, state.rows.length);
+  // Ask the browser not to drop the app and its log when the phone runs low on space.
+  const kept = state.store.persistent && (await navigator.storage?.persist?.().catch(() => false));
+  if (!state.store.persistent) $('info-storage').textContent = 'Memory only: save before closing the page';
+  else $('info-storage').textContent = kept ? 'Saved on this device until cleared' : 'Saved on this device (the browser may drop it if space runs out)';
 
   setInterval(flush, FLUSH_MS);
-  addEventListener('pagehide', flush);
-  document.addEventListener('visibilitychange', () => {
+  setInterval(saveTrace, TRACE_SAVE_MS);
+  addEventListener('pagehide', () => {
     flush();
+    saveTrace();
+  });
+  document.addEventListener('visibilitychange', () => {
+    const visible = document.visibilityState === 'visible';
+    if (state.mode === 'serial') state.trace.note(visible ? 'page in front again' : 'page hidden: the browser may pause the readout');
+    flush();
+    saveTrace();
     if (state.controller) keepAwake(true);
   });
 

@@ -4,6 +4,8 @@
 import { PIDS, SUPPORT_PIDS } from './pids.js';
 
 const VERSION = 'ELM327 v1.5';
+const CAN_PROTOCOLS = new Set(['6', '7', '8', '9', 'A', 'B', 'C']);
+const SLOW_INIT_PROTOCOLS = new Set(['3', '4']);
 
 const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
 const pctByte = (percent) => [Math.round((clamp(percent, 0, 100) * 255) / 100)];
@@ -16,13 +18,38 @@ export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const nextTask = () =>
   new Promise((resolve) => (typeof setImmediate === 'function' ? setImmediate(resolve) : setTimeout(resolve, 0)));
 
-/** Answers AT commands and mode 01 requests with a synthetic drift session. */
+/**
+ * Answers AT commands and mode 01 requests with a synthetic drift session.
+ *
+ * `busProtocol` is the protocol the car speaks (ATSP number; null = the car is
+ * silent, as with the ignition off). `autoSearch: false` makes the automatic
+ * search miss the car, as some adapters do on K-line cars. `searchHangs` makes
+ * the automatic search print no prompt until it is interrupted. `rejected`
+ * lists AT commands (without "AT") a clone answers with "?". `gearbox` lists
+ * PIDs of a second ECU that answers before the engine.
+ */
 export class ELM327Simulator {
-  constructor({ supported, multiPid = true, responseCount = true, noData = [], clock = () => performance.now() / 1000 } = {}) {
+  constructor({
+    supported,
+    multiPid = true,
+    responseCount = true,
+    noData = [],
+    busProtocol = '6',
+    autoSearch = true,
+    searchHangs = false,
+    rejected = [],
+    gearbox = null,
+    clock = () => performance.now() / 1000,
+  } = {}) {
     this.supported = new Set(supported ?? PIDS.keys());
     this.multiPid = multiPid;
     this.responseCount = responseCount;
     this.noData = new Set(noData);
+    this.busProtocol = busProtocol;
+    this.autoSearch = autoSearch;
+    this.searchHangs = searchHangs;
+    this.rejected = new Set(rejected);
+    this.gearbox = gearbox ? new Set(gearbox) : null;
     this.clock = clock;
     this.start = clock();
     this.requests = [];
@@ -32,13 +59,15 @@ export class ELM327Simulator {
   #reset() {
     this.echo = true;
     this.spaces = true;
-    this.searched = false;
+    this.selected = '0'; // ATSP number; 0 = automatic search
+    this.connected = false;
+    this.busy = false;
   }
 
   // Car model ---------------------------------------------------------------
 
   valueBytes(pid) {
-    if (SUPPORT_PIDS.includes(pid)) return this.#supportBitmap(pid);
+    if (SUPPORT_PIDS.includes(pid)) return this.#supportBitmap(pid, this.supported);
     const t = this.clock() - this.start;
     const wave = Math.sin(1.1 * t);
     switch (pid) {
@@ -65,11 +94,11 @@ export class ELM327Simulator {
     }
   }
 
-  #supportBitmap(base) {
+  #supportBitmap(base, supported) {
     const bytes = [0, 0, 0, 0];
-    const higherExists = [...this.supported].some((pid) => pid > base + 32);
+    const higherExists = [...supported].some((pid) => pid > base + 32);
     for (let offset = 1; offset <= 32; offset += 1) {
-      const set = this.supported.has(base + offset) || (offset === 32 && higherExists);
+      const set = supported.has(base + offset) || (offset === 32 && higherExists);
       if (set) bytes[(offset - 1) >> 3] |= 0x80 >> ((offset - 1) & 7);
     }
     return bytes;
@@ -81,8 +110,14 @@ export class ELM327Simulator {
   handle(rawCommand) {
     const command = rawCommand.trim().toUpperCase().replaceAll(' ', '');
     this.requests.push(command);
+    if (this.busy) {
+      // Any input stops a running search; the interrupting command itself is lost.
+      this.busy = false;
+      return 'STOPPED\r\r>';
+    }
     const answer = this.#answer(command);
     const echo = this.echo ? `${rawCommand.trim()}\r` : '';
+    if (this.busy) return `${echo}${answer}`; // no prompt: the adapter keeps searching
     return `${echo}${answer}\r\r>`;
   }
 
@@ -97,7 +132,9 @@ export class ELM327Simulator {
       this.#reset();
       return `\r${VERSION}`;
     }
+    if (this.rejected.has(command)) return '?';
     if (command === 'I') return VERSION;
+    if (command === '@1') return 'OBDII to RS232 Interpreter';
     if (command === 'E0' || command === 'E1') {
       this.echo = command === 'E1';
       return 'OK';
@@ -106,34 +143,81 @@ export class ELM327Simulator {
       this.spaces = command === 'S1';
       return 'OK';
     }
-    if (['L0', 'L1', 'H0', 'H1', 'AT0', 'AT1', 'AT2'].includes(command) || command.startsWith('SP') || command.startsWith('ST')) {
+    if (command.startsWith('SP')) {
+      this.selected = command.slice(-1);
+      this.connected = false;
       return 'OK';
     }
-    if (command === 'DPN') return 'A6';
+    if (['L0', 'L1', 'H0', 'H1', 'AT0', 'AT1', 'AT2'].includes(command) || command.startsWith('ST')) return 'OK';
+    if (command === 'DPN') {
+      if (this.selected !== '0') return this.selected;
+      return `A${this.connected ? this.busProtocol : '0'}`;
+    }
     if (command === 'RV') return '12.6V';
     return '?';
   }
 
+  /** Bring the bus up as the selected protocol allows: progress text to print, or the adapter's error. */
+  #openBus() {
+    if (this.connected) return { prefix: '' };
+    if (this.selected === '0') {
+      if (this.searchHangs) {
+        this.busy = true;
+        return { error: 'SEARCHING...' };
+      }
+      if (this.busProtocol === null || !this.autoSearch) return { error: 'SEARCHING...\rUNABLE TO CONNECT' };
+      this.connected = true;
+      return { prefix: 'SEARCHING...\r' };
+    }
+    const slowInit = SLOW_INIT_PROTOCOLS.has(this.selected);
+    if (this.selected !== this.busProtocol) {
+      if (slowInit) return { error: 'BUS INIT: ...ERROR' };
+      if (this.selected === '5') return { error: 'BUS INIT: ERROR' };
+      return { error: CAN_PROTOCOLS.has(this.selected) ? 'CAN ERROR' : 'NO DATA' };
+    }
+    this.connected = true;
+    if (slowInit) return { prefix: 'BUS INIT: ...OK\r' };
+    return { prefix: this.selected === '5' ? 'BUS INIT: OK\r' : '' };
+  }
+
   #mode01(rawBody) {
     let body = rawBody;
+    let wanted = Infinity;
     if (body.length % 2 === 1) {
-      // trailing response count digit, e.g. "0C1"
+      // trailing response count digit, e.g. "0C1": stop after that many answers
       if (!this.responseCount) return '?';
+      wanted = parseInt(body.at(-1), 16);
       body = body.slice(0, -1);
     }
     if (!/^[0-9A-F]+$/.test(body)) return '?';
+    const bus = this.#openBus();
+    if (bus.error) return bus.error;
     let pids = [];
     for (let i = 0; i < body.length; i += 2) pids.push(parseInt(body.slice(i, i + 2), 16));
-    if (!this.multiPid) pids = pids.slice(0, 1);
+    // Several PIDs in one request exist only on CAN; a K-line ECU answers the first.
+    if (!this.multiPid || !CAN_PROTOCOLS.has(this.busProtocol)) pids = pids.slice(0, 1);
+    const answers = [];
+    const second = this.#gearboxAnswer(pids[0]);
+    if (second) answers.push(second);
     const payload = [0x41];
     for (const pid of pids) {
       const known = SUPPORT_PIDS.includes(pid) || this.supported.has(pid);
       if (!known || this.noData.has(pid)) continue;
       payload.push(pid, ...this.valueBytes(pid));
     }
-    const prefix = this.searched ? '' : 'SEARCHING...\r';
-    this.searched = true;
-    return prefix + (payload.length === 1 ? 'NO DATA' : this.#format(payload));
+    if (payload.length > 1) answers.push(payload);
+    if (!answers.length) return `${bus.prefix}NO DATA`;
+    return bus.prefix + answers.slice(0, wanted).map((answer) => this.#format(answer)).join('\r');
+  }
+
+  /** The second ECU has its own, much shorter, list of PIDs and answers before the engine. */
+  #gearboxAnswer(pid) {
+    if (!this.gearbox) return null;
+    if (SUPPORT_PIDS.includes(pid)) {
+      if (pid !== 0 && ![...this.gearbox].some((supported) => supported > pid)) return null;
+      return [0x41, pid, ...this.#supportBitmap(pid, this.gearbox)];
+    }
+    return this.gearbox.has(pid) ? [0x41, pid, ...this.valueBytes(pid)] : null;
   }
 
   #format(payload) {

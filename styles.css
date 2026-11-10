@@ -138,6 +138,13 @@ main {
   font-size: 0.9375rem;
 }
 
+.progress {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9375rem;
+  text-align: center;
+}
+
 /* Dashboard --------------------------------------------------------------- */
 
 .dash,
@@ -450,6 +457,33 @@ summary:focus-visible {
 .adapter dd {
   margin: 0;
   overflow-wrap: anywhere;
+}
+
+.diagnostics {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding: 0 14px 14px;
+}
+
+.diagnostics p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.trace {
+  max-height: 55dvh;
+  margin: 0;
+  padding: 10px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg);
+  color: #cfe0f0;
+  font: 0.75rem/1.5 ui-monospace, 'Cascadia Mono', Consolas, Menlo, monospace;
+  white-space: pre;
+  overscroll-behavior: contain;
 }
 
 .footer {

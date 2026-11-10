@@ -7,9 +7,9 @@ import { run } from './poller.js';
 import { ELM327Simulator, LoopbackTransport } from './simulator.js';
 import { RowStore } from './storage.js';
 import { Trace } from './trace.js';
-import { WebSerialTransport } from './transports.js';
+import { WebSerialTransport, pickPort } from './transports.js';
 
-const APP_VERSION = '0.2.1';
+const APP_VERSION = '0.2.2';
 const RPM_MAX = 8000;
 const REDLINE = 0.85;
 const FLUSH_MS = 1000; // a killed page loses at most about this much of the log
@@ -18,6 +18,7 @@ const TRACE_LINES_SHOWN = 300;
 const SAVED_KEY = 'drifthing-obd-saved-rows';
 const TRACE_KEY = 'drifthing-obd-trace';
 const PROTOCOL_KEY = 'drifthing-obd-protocol';
+const ADAPTER_KEY = 'drifthing-obd-adapter-picked'; // '1' once an adapter was picked in the chooser
 
 // What the Demo button simulates. "?car=kline" in the address shows an old
 // K-line car (one value per request, slow), "?car=silent" a car that never answers.
@@ -33,6 +34,7 @@ const FORMAT = {
 
 const $ = (id) => document.getElementById(id);
 const hasSerial = 'serial' in navigator;
+const onAndroid = /Android/i.test(`${navigator.userAgentData?.platform ?? ''} ${navigator.userAgent}`);
 const count = new Intl.NumberFormat('en-US');
 
 const state = {
@@ -207,12 +209,12 @@ function portText(port) {
   return 'serial port';
 }
 
+const adapterPicked = () => readStored(ADAPTER_KEY) === '1';
+
 async function connect({ choose = false } = {}) {
   try {
-    let port = null;
-    if (!choose) [port] = await navigator.serial.getPorts();
-    const remembered = port !== undefined && port !== null;
-    port ??= await navigator.serial.requestPort();
+    const { port, remembered } = await pickPort(navigator.serial, { choose, pickedBefore: adapterPicked(), android: onAndroid });
+    writeStored(ADAPTER_KEY, '1');
     state.trace.note(`${remembered ? 'remembered' : 'picked'} adapter: ${portText(port)}`);
     start('serial', () => new ELM327(new WebSerialTransport(port), { preferredProtocol: state.protocol, onProgress }));
   } catch (error) {
@@ -220,8 +222,9 @@ async function connect({ choose = false } = {}) {
       // The chooser was closed without picking a device.
       state.trace.note('no adapter was picked');
       showNotice(
-        'No adapter was picked. If the list was empty, pair the adapter first in the Bluetooth settings of the phone ' +
-          '(PIN 1234 or 0000) while it is plugged into the car.',
+        'No adapter was picked. If the list was empty: allow "Nearby devices" for Chrome (phone Settings, Apps, Chrome, ' +
+          'Permissions), then stop Chrome with "Force stop" and open this app again. The adapter must also be paired ' +
+          'in the Bluetooth settings of the phone (PIN 1234 or 0000).',
       );
       return;
     }
@@ -393,7 +396,8 @@ function updateControls() {
   $('log-tag').hidden = state.mode !== 'demo';
   if (running) {
     $('other').hidden = true;
-  } else if (hasSerial) {
+  } else if (hasSerial && adapterPicked()) {
+    // Not before an adapter was picked: see pickPort() for what an early getPorts() does on Android.
     navigator.serial.getPorts().then((ports) => {
       $('other').hidden = state.controller !== null || ports.length === 0;
     });

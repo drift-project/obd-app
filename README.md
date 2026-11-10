@@ -29,6 +29,16 @@ Po pierwszym otwarciu aplikacja działa także bez internetu: pliki zostają w p
 
 Gdy internet jest, aplikacja przy każdym uruchomieniu pyta serwer o aktualne pliki. Żeby pobrać nową wersję, przeciągnij ekran w dół (odświeżenie) albo zamknij aplikację na liście ostatnich i otwórz ją ponownie. Numer wersji jest w stopce strony.
 
+### Lista adapterów jest pusta
+
+Jeśli po dotknięciu **Connect adapter** Chrome pisze "Nie znaleziono zgodnych urządzeń", a adapter jest sparowany i działa w innej aplikacji (na przykład Car Scanner), to Chrome nie ma dostępu do Bluetooth:
+
+1. Ustawienia telefonu, Aplikacje, Chrome, Uprawnienia: ustaw **Urządzenia w pobliżu** na "Zezwól".
+2. Na ekranie aplikacji Chrome dotknij **Wymuś zatrzymanie**. Chrome układa listę urządzeń Bluetooth raz na uruchomienie, więc bez tego lista zostaje pusta.
+3. Rozłącz inną aplikację OBD (adapter obsługuje jedno połączenie naraz), otwórz DRIFThing OBD i spróbuj ponownie.
+
+Od wersji 0.2.2 aplikacja prosi na Androidzie tylko o porty Bluetooth i wtedy Chrome sam pyta o to uprawnienie. Chrome pokazuje wyłącznie urządzenia sparowane w ustawieniach Bluetooth telefonu, dla których system zapamiętał usługę portu szeregowego.
+
 ## Uruchomienie na laptopie
 
 Ten sam adres działa w Chrome i Edge na laptopie. Do pracy nad kodem aplikację uruchamia się lokalnie:

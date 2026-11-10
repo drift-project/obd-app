@@ -6,6 +6,52 @@
 
 const encoder = new TextEncoder();
 
+/** The standard Bluetooth Serial Port Profile, which ELM327 adapters use. */
+export const SERIAL_PORT_PROFILE = '00001101-0000-1000-8000-00805f9b34fb';
+
+/**
+ * Options for `navigator.serial.requestPort()`.
+ *
+ * Chrome on Android sees paired Bluetooth devices only with the "Nearby
+ * devices" permission, and its chooser asks for that permission only when the
+ * request is limited to Bluetooth ports. An open request gets an empty list
+ * ("No compatible devices found") and nothing tells the user why. Android has
+ * no other serial ports anyway; elsewhere wired adapters stay in the list.
+ */
+export function portRequestOptions({ android = false } = {}) {
+  if (!android) return {};
+  return {
+    filters: [{ bluetoothServiceClassId: SERIAL_PORT_PROFILE }],
+    allowedBluetoothServiceClassIds: [SERIAL_PORT_PROFILE],
+  };
+}
+
+async function requestPort(serial, android) {
+  try {
+    return await serial.requestPort(portRequestOptions({ android }));
+  } catch (error) {
+    // A browser that does not accept the Bluetooth filter: ask without it.
+    if (!android || error.name !== 'TypeError') throw error;
+    return serial.requestPort();
+  }
+}
+
+/**
+ * The adapter port: the one the browser remembers, or one picked by the user.
+ *
+ * Remembered ports are asked for only when an adapter was picked on this device
+ * before (`pickedBefore`). Chrome on Android fills its list of Bluetooth ports
+ * once per browser start. Asking for remembered ports before Chrome holds the
+ * Bluetooth permission leaves that list empty until Chrome is restarted.
+ */
+export async function pickPort(serial, { choose = false, pickedBefore = false, android = false } = {}) {
+  if (!choose && pickedBefore) {
+    const [port] = await serial.getPorts();
+    if (port) return { port, remembered: true };
+  }
+  return { port: await requestPort(serial, android), remembered: false };
+}
+
 export function withTimeout(promise, ms, message) {
   let timer;
   const timeout = new Promise((_, reject) => {

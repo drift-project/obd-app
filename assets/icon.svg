@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="96" fill="#05090e"/>
+  <path d="M 117.44 336 A 160 160 0 1 1 394.56 336" fill="none" stroke="#42baff" stroke-width="36" stroke-linecap="round"/>
+  <path d="M 408.17 206.56 A 160 160 0 0 1 394.56 336" fill="none" stroke="#ff4640" stroke-width="36" stroke-linecap="round"/>
+  <text x="256" y="302" text-anchor="middle" font-family="Saira, 'Arial Black', sans-serif" font-style="italic" font-weight="800" font-size="96" fill="#f6f8fc">OBD</text>
+</svg>

@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#05090e">
+  <meta name="description" content="DRIFThing OBD: live car data from an ELM327 adapter, logged for drift analysis.">
+  <title>DRIFThing OBD</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="assets/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="assets/icon-192.png">
+  <link rel="stylesheet" href="styles.css">
+  <script type="module" src="src/app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="assets/logo.svg" alt="" width="44" height="24">
+      <span class="brand-name">DRIFThing</span>
+      <span class="brand-tag">OBD</span>
+    </div>
+    <p id="status" class="status" data-phase="idle" role="status">Disconnected</p>
+  </header>
+
+  <main>
+    <p id="notice" class="notice" hidden></p>
+
+    <section class="dash" aria-label="Live car data">
+      <div class="gauge" data-field="rpm">
+        <svg viewBox="0 0 200 156" aria-hidden="true">
+          <path class="gauge-track" d="M 30.72 140 A 80 80 0 1 1 169.28 140" pathLength="100"/>
+          <path class="gauge-redline" d="M 30.72 140 A 80 80 0 1 1 169.28 140" pathLength="100"/>
+          <path id="rpm-arc" class="gauge-value" d="M 30.72 140 A 80 80 0 1 1 169.28 140" pathLength="100"/>
+        </svg>
+        <div class="gauge-readout">
+          <span class="big" data-value="rpm">--</span>
+          <span class="unit">rpm</span>
+        </div>
+      </div>
+
+      <div class="side">
+        <div class="speed" data-field="speed_kmh">
+          <span class="big" data-value="speed_kmh">--</span>
+          <span class="unit">km/h</span>
+        </div>
+
+        <div class="bars">
+          <div class="bar-row" data-field="throttle_pct">
+            <span class="bar-label">Throttle</span>
+            <div class="bar"><span data-bar="throttle_pct"></span></div>
+            <span class="bar-value"><span data-value="throttle_pct">--</span><small>%</small></span>
+          </div>
+          <div class="bar-row pedal" data-field="pedal_pct">
+            <span class="bar-label">Pedal</span>
+            <div class="bar"><span data-bar="pedal_pct"></span></div>
+            <span class="bar-value"><span data-value="pedal_pct">--</span><small>%</small></span>
+          </div>
+        </div>
+
+        <dl class="tiles">
+          <div class="tile" data-field="coolant_c"><dt>Coolant</dt><dd><span data-value="coolant_c">--</span><small>°C</small></dd></div>
+          <div class="tile" data-field="intake_air_c"><dt>Intake air</dt><dd><span data-value="intake_air_c">--</span><small>°C</small></dd></div>
+          <div class="tile" data-field="engine_load_pct"><dt>Load</dt><dd><span data-value="engine_load_pct">--</span><small>%</small></dd></div>
+          <div class="tile" data-field="maf_gs"><dt>Air flow</dt><dd><span data-value="maf_gs">--</span><small>g/s</small></dd></div>
+          <div class="tile" data-field="map_kpa"><dt>Manifold</dt><dd><span data-value="map_kpa">--</span><small>kPa</small></dd></div>
+        </dl>
+      </div>
+    </section>
+
+    <section class="controls" aria-label="Connection">
+      <button id="connect" class="button primary" type="button">Connect adapter</button>
+      <button id="demo" class="button" type="button">Demo</button>
+      <button id="disconnect" class="button" type="button" hidden>Disconnect</button>
+      <button id="other" class="link" type="button" hidden>Choose another adapter</button>
+    </section>
+
+    <section class="log" aria-label="Recorded data">
+      <div class="log-summary">
+        <h2>Log <span id="log-tag" class="tag" hidden>Demo</span></h2>
+        <p><strong id="row-count">0</strong> rows <span id="log-span"></span></p>
+      </div>
+      <div class="log-actions">
+        <button id="save" class="button" type="button" disabled>Save CSV</button>
+        <button id="share" class="button" type="button" hidden disabled>Share</button>
+        <button id="clear" class="button danger" type="button" disabled>Clear</button>
+      </div>
+    </section>
+
+    <details class="adapter">
+      <summary>Adapter details</summary>
+      <dl>
+        <div><dt>Adapter</dt><dd id="info-version">--</dd></div>
+        <div><dt>Protocol</dt><dd id="info-protocol">--</dd></div>
+        <div><dt>Signals</dt><dd id="info-signals">--</dd></div>
+        <div><dt>Errors</dt><dd id="info-errors">0</dd></div>
+        <div><dt>Last error</dt><dd id="info-last-error">--</dd></div>
+        <div><dt>Log storage</dt><dd id="info-storage">--</dd></div>
+      </dl>
+    </details>
+  </main>
+
+  <footer class="footer">DRIFThing OBD 0.1.0. Keep the screen on and this page in front while driving.</footer>
+</body>
+</html>

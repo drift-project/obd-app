@@ -124,6 +124,14 @@ const GRAVITY = 9.81;
 const AT_REST_MS2 = 0.4;
 const AT_REST_RADS = 0.06;
 const UP_SETTLE_S = 3;
+// Gravity is taken out of the accelerometer here, not by Android. Android follows a sustained acceleration
+// with its estimate of gravity, as if the phone had tipped, and on the first real drives its acceleration
+// without gravity showed only 20 to 70% of the changes of velocity GPS measured. Gravity as the phone sits
+// in its holder is learned only while GPS shows the car standing or going steadily straight on, and it
+// explained those changes to 81 to 96%.
+const STEADY_MS = 1500; // how long a fix that shows steady driving counts
+const STEADY_SPEED_MS = 0.4; // change of speed between fixes, m/s
+const STEADY_TURN = 3; // deg/s
 
 export class DriftEstimator {
   #last = null; // newest attitude quaternion
@@ -147,6 +155,9 @@ export class DriftEstimator {
   #spinAt = null;
   #tip = [0, 0, 0]; // rotation about horizontal axes over the last seconds, radians, phone coordinates
   #moved = false; // the phone was handled and the heading has not been set again since
+  #gravity = null; // what the accelerometer reads while the car goes steadily, phone coordinates, m/s2
+  #steadyAt = -Infinity; // arrival of the newest fix that showed the car standing or going steadily
+  #source = null; // where the summed acceleration comes from: 'own' (gravity taken out here) or 'android'
 
   /**
    * `minSpeed` (m/s): below it GPS course is too noisy to calibrate on.
@@ -171,6 +182,7 @@ export class DriftEstimator {
     const size = Math.hypot(...vector);
     const seconds = this.#upAt === null ? 0 : (time - this.#upAt) / 1000;
     this.#upAt = time;
+    this.#ownAcceleration(time, vector, seconds);
     if (Math.abs(size - GRAVITY) > AT_REST_MS2 || this.#spin > AT_REST_RADS) return;
     const unit = vector.map((value) => value / size);
     if (!this.#up) {
@@ -181,6 +193,16 @@ export class DriftEstimator {
     const mixed = this.#up.map((value, axis) => value + (unit[axis] - value) * share);
     const length = Math.hypot(...mixed) || 1;
     this.#up = mixed.map((value) => value / length);
+  }
+
+  /** Learn gravity where GPS vouches that nothing accelerates, and sum the rest as the car's acceleration. */
+  #ownAcceleration(time, vector, seconds) {
+    const steady = time - this.#steadyAt <= STEADY_MS && this.#spin <= AT_REST_RADS;
+    if (steady && Math.abs(Math.hypot(...vector) - (this.#gravity ? Math.hypot(...this.#gravity) : GRAVITY)) <= AT_REST_MS2) {
+      const share = this.#gravity ? Math.min(Math.max(seconds, 0) / UP_SETTLE_S, 1) : 1;
+      this.#gravity = this.#gravity ? this.#gravity.map((value, axis) => value + (vector[axis] - value) * share) : [...vector];
+    }
+    if (this.#gravity) this.#feed('own', time, vector.map((value, axis) => value - this.#gravity[axis]));
   }
 
   /**
@@ -201,6 +223,7 @@ export class DriftEstimator {
     if (Math.hypot(...this.#tip) * DEGREES < TIP_LIMIT_DEG) return;
     // Handled. Where up is has to be learned again, and so has everything that hung on how the phone sat.
     this.#up = null;
+    this.#gravity = null;
     this.#tip = [0, 0, 0];
     this.#moved = true;
     this.#calibrated = false;
@@ -245,9 +268,25 @@ export class DriftEstimator {
     while (this.#turns.length > 2 && this.#turns[0][0] < time - HISTORY_MS) this.#turns.shift();
   }
 
-  /** Acceleration without gravity at `time` (ms), in phone coordinates, m/s². */
+  /**
+   * Acceleration without gravity at `time` (ms) as Android works it out, in phone coordinates, m/s². It is
+   * used only until gravity has been learned here from the accelerometer.
+   */
   acceleration(time, vector) {
-    if (!this.#last || !vector.every(Number.isFinite)) return;
+    if (vector.every(Number.isFinite)) this.#feed('android', time, vector);
+  }
+
+  /** Sum the acceleration of the car, from the source that is the better one at the moment. */
+  #feed(source, time, vector) {
+    if (!this.#last) return;
+    if (source !== (this.#gravity ? 'own' : 'android')) return;
+    if (this.#source !== source) {
+      // The two sources do not read alike, so what was summed and learned from one is not carried over.
+      this.#source = source;
+      this.#sums.length = 0;
+      this.#match = DELAYS_MS.map(() => ({ re: 0, im: 0, energy: 0 }));
+      this.#aided = false;
+    }
     const [ax, ay] = horizontal(this.#last, vector);
     const sums = this.#sums;
     const previous = sums.at(-1);
@@ -420,6 +459,15 @@ export class DriftEstimator {
     this.#fix = fix;
     const seconds = previous ? (time - previous.arrived) / 1000 : 0;
     const consecutive = previous !== null && seconds > 0.2 && seconds < 2.5;
+    // Standing, or going on at the same speed in the same direction: then the accelerometer reads gravity alone.
+    const evenly =
+      consecutive &&
+      moving &&
+      previous.speed !== null &&
+      previous.course !== null &&
+      Math.abs(speed - previous.speed) / seconds <= STEADY_SPEED_MS &&
+      Math.abs(wrap180(course - previous.course)) / seconds <= STEADY_TURN;
+    if (standing || evenly) this.#steadyAt = time;
     if (consecutive && previous.east !== null && fix.east !== null) this.#learn(previous, fix);
     // A fix that is tens of metres off would only scribble on the map. The line is extended last,
     // once the drift angle at this fix is known: the line carries it.

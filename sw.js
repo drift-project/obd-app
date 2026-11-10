@@ -15,7 +15,7 @@
 // sites from other folders of the same origin. Only caches with this prefix
 // are ever removed here.
 const CACHE_PREFIX = 'drifthing-obd-';
-const CACHE = `${CACHE_PREFIX}v11`;
+const CACHE = `${CACHE_PREFIX}v12`;
 const NETWORK_TIMEOUT_MS = 2500;
 const ASSETS = [
   './',

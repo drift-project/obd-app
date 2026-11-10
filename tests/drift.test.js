@@ -74,7 +74,7 @@ function noiseSource(seed = 12345) {
  * own north is turned from true north, which the phone cannot know.
  * `each(t, shown, truth)` is called after every sensor sample.
  */
-function ride(estimator, car, { to, frame = 0, gpsDelay = 300, noise = null, accelerometer = true, pause = null, each = () => {} }) {
+function ride(estimator, car, { to, frame = 0, gpsDelay = 300, noise = null, accelerometer = true, android = 1, raw = false, pause = null, each = () => {} }) {
   const random = noiseSource();
   const frameTurn = rotation(UP, -frame);
   const velocity = (t) => {
@@ -100,7 +100,15 @@ function ride(estimator, car, { to, frame = 0, gpsDelay = 300, noise = null, acc
         const east = (after.east - 2 * state.east + before.east) / 0.0004;
         const north = (after.north - 2 * state.north + before.north) / 0.0004;
         const inPhone = turnVector(inverse(inMap), [east, north, 0]);
-        estimator.acceleration(t * 1000, noise ? inPhone.map((value) => value + noise.acceleration * random()) : inPhone);
+        // `android` scales what Android hands over as acceleration without gravity: on real drives it fell short.
+        estimator.acceleration(t * 1000, (noise ? inPhone.map((value) => value + noise.acceleration * random()) : inPhone).map((value) => value * android));
+        if (raw) {
+          // The raw accelerometer reads gravity, up, as well; the gyroscope reads the turning of the car.
+          const gravity = turnVector(inverse(inMap), [0, 0, 9.81]);
+          estimator.accelerometer(t * 1000, inPhone.map((value, axis) => value + gravity[axis]));
+          const turning = -wrap180(car(t + 0.01).heading - car(t - 0.01).heading) / 0.02;
+          estimator.gyroscope(t * 1000, turnVector(inverse(inMap), [0, 0, turning * RADIANS]));
+        }
       }
     }
     if (step % 60 === 0 && t >= gpsDelay / 1000) {
@@ -292,6 +300,17 @@ test('with the accelerometer the angle is right between the fixes as well', (t) 
   assert.ok(mean < 1, `mean error ${mean.toFixed(2)} degrees`);
   assert.equal(aidedShare, 1);
   assert.equal(estimator.at(60000).gpsDelay, 300);
+});
+
+test('gravity is taken out of the raw accelerometer, so an Android acceleration that falls short does no harm', (t) => {
+  // Android hands over only 40% of the acceleration, as on the first real drives.
+  const short = angleErrors(demoDrive, { to: 60, frame: 137, gpsDelay: 300, android: 0.4 });
+  const own = angleErrors(demoDrive, { to: 60, frame: 137, gpsDelay: 300, android: 0.4, raw: true });
+  t.diagnostic(`Android alone: worst ${short.worst.toFixed(1)}, aided ${(100 * short.aidedShare).toFixed(0)}%; raw: worst ${own.worst.toFixed(1)}, aided ${(100 * own.aidedShare).toFixed(0)}%`);
+  assert.ok(own.worst < 4, `worst error ${own.worst.toFixed(1)} degrees`);
+  assert.ok(own.mean < 1, `mean error ${own.mean.toFixed(2)} degrees`);
+  assert.equal(own.aidedShare, 1);
+  assert.ok(short.worst > 2 * own.worst, `Android alone: ${short.worst.toFixed(1)} degrees`);
 });
 
 test('how late the fixes arrive is found from the data', () => {

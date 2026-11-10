@@ -22,7 +22,7 @@ import { WebSerialTransport, pickPort } from './transports.js';
 import { WheelWatch } from './wheels.js';
 import { zip } from './zip.js';
 
-const APP_VERSION = '0.8.0';
+const APP_VERSION = '0.8.1';
 const RPM_MAX = 8000;
 const REDLINE = 0.85;
 const FLUSH_MS = 1000; // a killed page loses at most about this much of the log

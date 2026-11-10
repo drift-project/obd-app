@@ -81,18 +81,20 @@ test('the road drive: the angle logged with the compass wandered, worked out aga
   assert.equal(totals.topRpm, 5411);
 });
 
+// Since gravity is taken out of the accelerometer by the app (0.8.1) the direction of travel between fixes is
+// known better, and some of the larger angles seen before turned out to be guesses of it in the transitions.
 for (const [file, least] of [
-  ['drifthing_log_20261110_202207.zip', { drifts: 4, spans: 5 }],
-  ['drifthing_log_20261110_202918.zip', { drifts: 3, spans: 3 }],
-  ['drifthing_log_20261110_203420.zip', { drifts: 8, spans: 8 }],
+  ['drifthing_log_20261110_202207.zip', { drifts: 4, spans: 5, best: [20, 40] }],
+  ['drifthing_log_20261110_202918.zip', { drifts: 1, spans: 3, best: [12, 40] }],
+  ['drifthing_log_20261110_203420.zip', { drifts: 6, spans: 8, best: [20, 40] }],
 ]) {
-  test(`a drift run (${file}): slides of 20 to 40 degrees with the wheels running ahead`, async () => {
+  test(`a drift run (${file}): slides with the wheels running ahead`, async () => {
     const { recorded, recording, wheels, drifts, totals } = await replayOf(file);
     assert.deepEqual(recorded.skipped, []);
     assert.ok(drifts.length >= least.drifts, `${drifts.length} drifts`);
     assert.ok(wheels.spans.length >= least.spans, `${wheels.spans.length} wheel spans`);
     assert.ok(wheels.spans.every(({ kind }) => kind === 'spin'));
-    assert.ok(Math.abs(totals.bestAngle) > 20 && Math.abs(totals.bestAngle) < 40, `best ${totals.bestAngle}`);
+    assert.ok(Math.abs(totals.bestAngle) > least.best[0] && Math.abs(totals.bestAngle) < least.best[1], `best ${totals.bestAngle}`);
     assert.ok(totals.topSlipPct > 100, `slip ${totals.topSlipPct}`);
     assert.ok(totals.topWheelKmh >= 90 && totals.topSpeedKmh < 80);
     // The two measurements meet: at least one drift comes with the wheels far ahead of the ground. (Not every

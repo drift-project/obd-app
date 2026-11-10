@@ -81,9 +81,26 @@ export function markBoxes(marks, from, to) {
   return boxes;
 }
 
+/**
+ * A dot at every point, as the `d` of an SVG path drawn with round line ends
+ * and a stroke that is not stretched with the plot: each point is a line of
+ * no length, which such a stroke shows as a round dot.
+ */
+export function plotDots(points, from, to, min, max) {
+  // The same places as the line goes through: a line from a point to itself.
+  return points.map((point) => plotPath([point], from, to, min, max)).join('');
+}
+
+// Dots are drawn while they stand apart, at least this many pixels of plot per point, and smaller where they
+// stand closer.
+const DOT_SPACING_PX = 3;
+const DOT_PX = 4.5;
+
 export class SignalChart {
   #marks = svg('g', { class: 'chart-marks' });
   #line = svg('path', { class: 'chart-line', d: '' });
+  #dots = svg('path', { class: 'chart-dots', d: '' });
+  #plot;
   #cursor = svg('line', { class: 'chart-cursor', x1: 0, x2: 0, y1: 0, y2: HEIGHT });
   #value = node('strong', 'chart-value', '--');
   #high = node('span', '', '');
@@ -107,7 +124,8 @@ export class SignalChart {
     remove.addEventListener('click', onRemove);
     head.append(node('span', 'chart-name', name), node('span', 'chart-source', source), this.#value, remove);
     const plot = svg('svg', { class: 'chart-plot', viewBox: `0 0 ${WIDTH} ${HEIGHT}`, preserveAspectRatio: 'none' });
-    plot.append(this.#marks, this.#line, this.#cursor);
+    plot.append(this.#marks, this.#line, this.#dots, this.#cursor);
+    this.#plot = plot;
     plot.addEventListener('click', (event) => {
       const box = plot.getBoundingClientRect();
       if (box.width > 0) onSeek(Math.min(Math.max((event.clientX - box.left) / box.width, 0), 1));
@@ -124,8 +142,10 @@ export class SignalChart {
    * and `max` are the signal's whole range, so the scale stays put from one
    * window to the next. `breaks` are the times where the line is interrupted
    * and `marks` (`[{ from, to, kind }]`) stretches of time shaded behind it.
+   * `exact` says that the points are the measurements themselves, not thinned
+   * out for drawing: then each gets a dot where they stand far enough apart.
    */
-  draw(points, from, to, min, max, breaks = [], marks = []) {
+  draw(points, from, to, min, max, breaks = [], marks = [], { exact = false } = {}) {
     this.#from = from;
     this.#to = to;
     this.#min = min;
@@ -136,6 +156,12 @@ export class SignalChart {
       ),
     );
     this.#line.setAttribute('d', plotPath(points, from, to, min, max, breaks));
+    const room = this.#plot.clientWidth || 300;
+    const inside = points.filter(([time]) => time >= from && time <= to);
+    const spacing = room / Math.max(inside.length, 1);
+    const dots = exact && spacing >= DOT_SPACING_PX;
+    this.#dots.setAttribute('d', dots ? plotDots(inside, from, to, min, max) : '');
+    if (dots) this.#dots.style.strokeWidth = `${Math.min(DOT_PX, Math.max(2.5, spacing * 0.9)).toFixed(1)}px`;
     this.#high.textContent = formatValue(max, min, max);
     this.#low.textContent = max > min ? formatValue(min, min, max) : '';
   }

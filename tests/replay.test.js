@@ -257,3 +257,28 @@ test('the log of the first drive loads as it was written', () => {
   assert.equal(recording.value('obd.coolant_c', 1794327544000), 77);
   assert.equal(recording.value('obd.rpm', 1794327543000), 756);
 });
+
+test('the values of a signal in a stretch of time are counted, both ends included', () => {
+  const rows = Array.from({ length: 10 }, (_, index) => [T0 + index * 1000, index]);
+  const recording = new Recording([table('obd', ['timestamp_ms', 'rpm'], rows)]);
+  assert.equal(recording.count('obd.rpm', T0, T0 + 9000), 10);
+  assert.equal(recording.count('obd.rpm', T0 + 500, T0 + 2500), 2);
+  assert.equal(recording.count('obd.rpm', T0 + 2000, T0 + 2000), 1);
+  assert.equal(recording.count('obd.rpm', T0 - 5000, T0 - 1000), 0);
+  assert.equal(recording.count('obd.none', T0, T0 + 9000), 0);
+});
+
+test('an angle is interpolated the short way round', () => {
+  const recording = new Recording([
+    table('drift', ['timestamp_ms', 'heading_deg', 'drift_angle_deg'], [
+      [T0, 350, 170],
+      [T0 + 1000, 10, -170],
+    ]),
+  ]);
+  assert.ok(Math.abs(recording.interpolateAngle('drift.heading_deg', T0 + 500) - 0) < 1e-9 || Math.abs(recording.interpolateAngle('drift.heading_deg', T0 + 500) - 360) < 1e-9);
+  assert.ok(Math.abs(recording.interpolateAngle('drift.heading_deg', T0 + 250) - 355) < 1e-9);
+  // A signal with negative values stays between -180 and 180.
+  assert.ok(Math.abs(Math.abs(recording.interpolateAngle('drift.drift_angle_deg', T0 + 500)) - 180) < 1e-9);
+  assert.ok(Math.abs(recording.interpolateAngle('drift.drift_angle_deg', T0 + 750) - -175) < 1e-9);
+  assert.equal(recording.interpolateAngle('drift.none', T0), null);
+});

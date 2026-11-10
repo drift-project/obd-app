@@ -23,6 +23,7 @@
 // right of the direction of travel.
 
 import { metersBetween, offsetBy } from './geo.js';
+import { curve } from './track.js';
 
 export const wrap360 = (degrees) => ((degrees % 360) + 360) % 360;
 export const wrap180 = (degrees) => wrap360(degrees + 180) - 180;
@@ -355,13 +356,27 @@ export class DriftEstimator {
     };
   }
 
-  /** Add the stretch from the fix before to this one to the line, bent to end exactly on the new fix. */
+  /**
+   * Add the stretch from the fix before to this one to the line, bent to end exactly on the new fix: as the
+   * accelerometer saw it where it can tell, else along the curve that leaves and reaches the two fixes with
+   * the velocities GPS gave.
+   */
   #extendPath(previous, fix) {
     if (previous?.position) {
       const taken = previous.arrived - this.#delay;
       const span = fix.arrived - previous.arrived;
       const end = this.#carry(previous, taken + span);
-      if (end) {
+      const slipAt = (share) => (previous.slip !== null && fix.slip !== null ? previous.slip + wrap180(fix.slip - previous.slip) * share : fix.slip);
+      if (!end) {
+        const velocity = (from) => (from.east === null ? null : { east: from.east, north: from.north });
+        const join = curve(metersBetween(previous.position, fix.position), velocity(previous), velocity(fix), span / 1000);
+        for (let step = 1; step < PATH_STEPS; step += 1) {
+          const share = step / PATH_STEPS;
+          const point = join(share);
+          const place = offsetBy(previous.position, point.east, point.north);
+          this.#path.push([place.latitude, place.longitude, slipAt(share)]);
+        }
+      } else {
         const real = metersBetween(previous.position, fix.position);
         for (let step = 1; step < PATH_STEPS; step += 1) {
           const share = step / PATH_STEPS;
@@ -371,8 +386,7 @@ export class DriftEstimator {
           const east = point.movedEast + share * (real.east - end.movedEast);
           const north = point.movedNorth + share * (real.north - end.movedNorth);
           const place = offsetBy(previous.position, east, north);
-          const between = previous.slip !== null && fix.slip !== null ? previous.slip + wrap180(fix.slip - previous.slip) * share : fix.slip;
-          this.#path.push([place.latitude, place.longitude, between]);
+          this.#path.push([place.latitude, place.longitude, slipAt(share)]);
         }
       }
     }

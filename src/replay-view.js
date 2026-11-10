@@ -7,6 +7,7 @@ import { driftTable } from './drift-replay.js';
 import { powerTable } from './engine.js';
 import { Recording, parseCsv, skipGap, streamOf } from './replay.js';
 import { findDrifts, summarize } from './summary.js';
+import { SmoothTrack } from './track.js';
 import { wheelSlip } from './wheels.js';
 import { unzip } from './zip.js';
 
@@ -39,6 +40,7 @@ const SIGNALS_KEY = 'drifthing-obd-replay-signals';
 const SPEED_KEY = 'drifthing-obd-replay-speed';
 const WINDOW_KEY = 'drifthing-obd-replay-window';
 const TRACK_POINTS = 5000;
+const POINTS_PER_CHART = 800; // a chart draws at most this many points; more are thinned keeping the peaks
 const EXAMPLES = 'examples/'; // recordings that come with the app, listed in index.json there
 const LEAD_IN_MS = 1500; // a tap on a drift starts the replay this much before it
 // How long a value stays on screen after it was measured.
@@ -59,6 +61,40 @@ const span = (ms) => `${Math.floor(ms / 60000)}:${two(Math.floor(ms / 1000) % 60
 const title = (stream) => STREAM_TITLES[stream] ?? stream;
 const rounded = (value, scale = 1) => (value === null ? '--' : String(Math.round(value * scale)));
 
+/**
+ * The smoothed line through the GPS fixes of a recording. The fixes are timed by the receiver's own clock
+ * (fix_ms), which spaces them evenly where their arrival may bunch up, moved onto the time line of the
+ * recording by the usual delay between fix and arrival. A fix more than 50 m off is left out.
+ */
+function smoothGps(recording) {
+  const { times, values: latitudes } = recording.series('gps.latitude_deg');
+  const longitudes = recording.series('gps.longitude_deg').values;
+  const exact = (id, time) => recording.value(id, time, 0);
+  const delays = [];
+  for (const time of times) {
+    const fix = exact('gps.fix_ms', time);
+    if (fix !== null && time - fix >= 0 && time - fix < 5000) delays.push(time - fix);
+  }
+  delays.sort((a, b) => a - b);
+  const delay = delays.length ? delays[Math.floor(delays.length / 2)] : null;
+  const fixes = [];
+  for (let index = 0; index < Math.min(times.length, longitudes.length); index += 1) {
+    const time = times[index];
+    if (exact('gps.accuracy_m', time) > 50) continue;
+    const fix = exact('gps.fix_ms', time);
+    fixes.push({
+      time: delay !== null && fix !== null && time - fix >= 0 && time - fix < 5000 ? fix + delay : time,
+      latitude: latitudes[index],
+      longitude: longitudes[index],
+      speed: exact('gps.speed_ms', time),
+      course: exact('gps.heading_deg', time),
+    });
+  }
+  fixes.sort((a, b) => a.time - b.time);
+  const track = new SmoothTrack(fixes);
+  return track.empty ? null : track;
+}
+
 export class ReplayView {
   #$;
   #map;
@@ -78,6 +114,7 @@ export class ReplayView {
   #charts = new Map();
   #track = [];
   #positions = null; // the stream the position comes from
+  #smooth = null; // the smoothed line through the GPS fixes, where the recording has them
   #marks = []; // stretches shaded on the charts: where the wheels turned faster or slower than the car moved
   #dragging = false;
   #shown = new Map(); // element id -> the text it shows
@@ -373,7 +410,16 @@ export class ReplayView {
     const recording = this.#recording;
     this.#positions = ['gps', 'drift'].find((stream) => recording.has(`${stream}.latitude_deg`) && recording.has(`${stream}.longitude_deg`)) ?? null;
     this.#track = [];
+    this.#smooth = null;
     if (!this.#positions) return;
+    if (this.#positions === 'gps') this.#smooth = smoothGps(recording);
+    if (this.#smooth) {
+      // Each point of the line carries the drift angle of the moment the car was there, for its colour.
+      this.#track = this.#smooth
+        .points(TRACK_POINTS)
+        .map(([latitude, longitude, time]) => [latitude, longitude, recording.interpolateAngle('drift.drift_angle_deg', time - GPS_LATE_MS, DRIFT_HOLD_MS)]);
+      return;
+    }
     const { times, values: latitudes } = recording.series(`${this.#positions}.latitude_deg`);
     const longitudes = recording.series(`${this.#positions}.longitude_deg`).values;
     const count = Math.min(latitudes.length, longitudes.length);
@@ -502,7 +548,9 @@ export class ReplayView {
       const signals = new Map(recording.signals.map((signal) => [signal.id, signal]));
       for (const [id, chart] of this.#charts) {
         const { min, max } = signals.get(id);
-        chart.draw(recording.points(id, from, from + length), from, from + length, min, max, this.#breaks, this.#marks);
+        // The measurements themselves are shown as dots on the line, where there are few enough not to be thinned out.
+        const exact = recording.count(id, from, from + length) <= POINTS_PER_CHART;
+        chart.draw(recording.points(id, from, from + length, POINTS_PER_CHART), from, from + length, min, max, this.#breaks, this.#marks, { exact });
       }
       this.#text('replay-range', `${clock(from)} to ${clock(Math.min(from + length, end))}`);
     }
@@ -530,7 +578,23 @@ export class ReplayView {
       this.#$('replay-car-tile').dataset.wheels = wheels;
     }
 
-    if (this.#positions) {
+    if (this.#smooth) {
+      // The car goes along the smoothed line. It points as the line goes, turned by the drift angle, so the
+      // angle seen between car and line is the angle in the readouts.
+      const at = this.#smooth.at(time + GPS_LATE_MS, GPS_HOLD_MS);
+      const angle = recording.interpolateAngle('drift.drift_angle_deg', time, DRIFT_HOLD_MS);
+      const course = at?.course ?? null;
+      const heading = course !== null && angle !== null ? (course + angle + 360) % 360 : recording.interpolateAngle('drift.heading_deg', time, DRIFT_HOLD_MS);
+      const nearest = at ?? this.#smooth.at(Math.min(Math.max(time + GPS_LATE_MS, this.#smooth.start), this.#smooth.end), Infinity);
+      this.#map.draw({
+        position: { latitude: nearest.latitude, longitude: nearest.longitude },
+        points: this.#track,
+        heading: at ? heading : null,
+        course: at ? course : null,
+        car: Boolean(at),
+      });
+      this.#map.hint = at ? '' : 'No position at this moment';
+    } else if (this.#positions) {
       // Between two positions the car moves along the straight line from one to the next.
       const fromGps = this.#positions === 'gps';
       const hold = fromGps ? GPS_HOLD_MS : DRIFT_HOLD_MS;

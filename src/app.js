@@ -22,7 +22,7 @@ import { WebSerialTransport, pickPort } from './transports.js';
 import { WheelWatch } from './wheels.js';
 import { zip } from './zip.js';
 
-const APP_VERSION = '0.7.0';
+const APP_VERSION = '0.8.0';
 const RPM_MAX = 8000;
 const REDLINE = 0.85;
 const FLUSH_MS = 1000; // a killed page loses at most about this much of the log
@@ -43,6 +43,8 @@ const ALARM_OFF_BELOW = 3; // degrees the coolant has to cool below the limit be
 const ALARM_REPEAT_MS = 8000;
 const ZOOM_KEY = 'drifthing-obd-map-zoom';
 const LAYER_KEY = 'drifthing-obd-map-layer'; // 'map' or 'orthophoto'
+const ZOOM3D_KEY = 'drifthing-obd-map-zoom-3d';
+const MAP_MODE_KEY = 'drifthing-obd-map-mode'; // '3d' (behind the car) or '2d' (flat, north up)
 const VIEWS = ['car', 'drift', 'replay'];
 const DRIFT_LOG_MS = 100; // the drift stream is written ten times a second
 
@@ -1269,9 +1271,13 @@ async function init() {
   const maps = [];
   const mapOptions = {
     zoom: Number(readStored(ZOOM_KEY)),
+    zoom3d: Number(readStored(ZOOM3D_KEY)),
+    mode: readStored(MAP_MODE_KEY) ?? '3d',
     layer: readStored(LAYER_KEY),
     onChange: (settings) => {
       writeStored(ZOOM_KEY, String(settings.zoom));
+      writeStored(ZOOM3D_KEY, String(settings.zoom3d));
+      writeStored(MAP_MODE_KEY, settings.mode);
       writeStored(LAYER_KEY, settings.layer);
       for (const map of maps) map.show(settings);
     },

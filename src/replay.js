@@ -192,14 +192,38 @@ export class Recording {
    * is held as value() holds it.
    */
   interpolate(id, time, holdMs = Infinity) {
+    return this.#between(id, time, holdMs, (from, to) => to - from);
+  }
+
+  /**
+   * Like interpolate(), for an angle in degrees: between 350 and 10 it goes
+   * the short way, through 0, and the result is in the range of the signal
+   * (-180 to 180 for a signal that has negative values, else 0 to 360).
+   */
+  interpolateAngle(id, time, holdMs = Infinity) {
+    const value = this.#between(id, time, holdMs, (from, to) => ((((to - from + 180) % 360) + 360) % 360) - 180);
+    if (value === null) return null;
+    const signed = this.#signals.get(id).min < 0;
+    const turned = ((value % 360) + 360) % 360;
+    return signed && turned > 180 ? turned - 360 : turned;
+  }
+
+  #between(id, time, holdMs, change) {
     const signal = this.#signals.get(id);
     if (!signal) return null;
     const { times, values } = signal;
     const index = lastAtOrBefore(times, time);
     if (index < 0) return null;
     const step = index + 1 < times.length ? times[index + 1] - times[index] : 0;
-    if (step > 0 && step <= holdMs) return values[index] + ((values[index + 1] - values[index]) * (time - times[index])) / step;
+    if (step > 0 && step <= holdMs) return values[index] + (change(values[index], values[index + 1]) * (time - times[index])) / step;
     return time - times[index] > holdMs ? null : values[index];
+  }
+
+  /** How many values a signal has between two times, both ends included. */
+  count(id, from, to) {
+    const signal = this.#signals.get(id);
+    if (!signal) return 0;
+    return lastAtOrBefore(signal.times, to) - firstAtOrAfter(signal.times, from) + 1;
   }
 
   /**

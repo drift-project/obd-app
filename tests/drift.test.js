@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { DEMO_START, demoDrive } from '../src/demo-drive.js';
-import { DRIFT_STREAM, DriftEstimator, wrap180, wrap360, yawBetween } from '../src/drift.js';
+import { DRIFT_STREAM, DriftEstimator, pickAttitude, wrap180, wrap360, yawBetween } from '../src/drift.js';
 import { metersBetween, offsetBy } from '../src/geo.js';
 
 const RADIANS = Math.PI / 180;
@@ -373,6 +373,54 @@ test('nothing is carried across a pause of the sensors', () => {
   assert.ok(later.every(({ aided }) => aided));
   assert.ok(later.every(({ error }) => error !== null && error < 5), `worst ${Math.max(...later.map(({ error }) => error)).toFixed(1)}`);
   assert.ok(seen.every(({ error }) => error === null || Number.isFinite(error)));
+});
+
+// --- Which sensor gives the attitude ---------------------------------------------------
+
+test('the attitude without the compass is used as soon as it delivers', () => {
+  assert.equal(pickAttitude(null, 'relative_orientation'), 'relative_orientation');
+  assert.equal(pickAttitude(null, 'orientation'), 'orientation');
+  assert.equal(pickAttitude('orientation', 'orientation'), 'orientation');
+  // It takes over even when the one with the compass was first. On the first real drive that one was
+  // a tenth of a millisecond earlier, was kept, and the heading wandered with the compass.
+  assert.equal(pickAttitude('orientation', 'relative_orientation'), 'relative_orientation');
+  // From then on the samples with the compass are left out.
+  assert.equal(pickAttitude('relative_orientation', 'orientation'), null);
+  assert.equal(pickAttitude('relative_orientation', 'relative_orientation'), 'relative_orientation');
+  assert.equal(pickAttitude(null, 'gyroscope'), null);
+});
+
+test('changing the attitude sensor does not turn the car', () => {
+  // The second sensor has its own idea of where zero is: here 130 degrees from the first.
+  const other = rotation(UP, 130);
+  const afterTheChange = (announced) => {
+    const estimator = drive(instant(), () => ({ heading: 45, course: 45, speed: 10 }), { to: 3 });
+    for (let step = 1; step <= 120; step += 1) {
+      estimator.attitude(3000 + (step * 1000) / 60, multiply(other, attitude(45)), announced && step === 1);
+    }
+    return estimator.at(5000);
+  };
+  near(afterTheChange(true).heading, 45, 0.01, 'heading after the change');
+  near(afterTheChange(true).driftAngle, 0, 0.01, 'drift angle after the change');
+  // Not announced, the step between the two sensors is taken for a turn of the car.
+  near(afterTheChange(false).heading, 45 - 130, 0.01, 'heading when the change is not announced');
+});
+
+test('what the accelerometer summed for one attitude sensor is not carried over to the other', () => {
+  const seen = [];
+  const car = (t) => ({ ...demoDrive(t) });
+  const estimator = new DriftEstimator();
+  ride(estimator, car, {
+    to: 40,
+    each: (t, shown) => {
+      // Half way the attitude starts to come from another sensor, turned against the first.
+      if (Math.abs(t - 20) < 1e-9) estimator.attitude(t * 1000 + 1, multiply(rotation(UP, 70), multiply(rotation(UP, -car(t).heading), MOUNT)), true);
+      seen.push({ t, aided: shown.aided });
+    },
+  });
+  assert.ok(seen.some(({ t, aided }) => t > 12 && t < 20 && aided), 'aided before the change');
+  // Right after it nothing is carried on: the sums start again.
+  assert.equal(seen.find(({ t }) => t > 20.02).aided, false);
 });
 
 test('the recorded stream names every value it writes', () => {

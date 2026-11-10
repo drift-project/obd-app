@@ -5,7 +5,7 @@ import { BatteryMonitor, chargePercent, chargingVerdict } from './battery.js';
 import { sessionClock } from './clock.js';
 import { fileName, toCsv } from './csv.js';
 import { DEMO_START, demoDrive, demoPhone } from './demo-drive.js';
-import { DRIFT_STREAM, DriftEstimator } from './drift.js';
+import { DRIFT_STREAM, DriftEstimator, pickAttitude } from './drift.js';
 import { ELM327, PROTOCOL_NAMES, protocolNumber } from './elm327.js';
 import { offsetBy } from './geo.js';
 import { TrackMap } from './map.js';
@@ -20,7 +20,7 @@ import { Trace } from './trace.js';
 import { WebSerialTransport, pickPort } from './transports.js';
 import { zip } from './zip.js';
 
-const APP_VERSION = '0.6.0';
+const APP_VERSION = '0.6.1';
 const RPM_MAX = 8000;
 const REDLINE = 0.85;
 const FLUSH_MS = 1000; // a killed page loses at most about this much of the log
@@ -199,10 +199,13 @@ function feedDrift(name, values) {
     state.dirty = true;
   } else if (name === 'linear_acceleration') {
     state.drift.acceleration(values[0], values.slice(1));
-  } else if (name === 'relative_orientation' || (name === 'orientation' && state.attitudeFrom !== 'relative_orientation')) {
-    // The attitude without the compass is steadier in a car; the one with it is the fallback.
-    state.attitudeFrom ??= name;
-    if (state.attitudeFrom === name) state.drift.attitude(values[0], values.slice(1));
+  } else if (name === 'relative_orientation' || name === 'orientation') {
+    const source = pickAttitude(state.attitudeFrom, name);
+    if (!source) return;
+    // Both sensors start within a millisecond of each other: whichever came first, the one without the compass takes over.
+    const restart = state.attitudeFrom !== null && state.attitudeFrom !== source;
+    state.attitudeFrom = source;
+    state.drift.attitude(values[0], values.slice(1), restart);
   }
 }
 
@@ -654,6 +657,7 @@ function logInfo(stamp, rows) {
     'Phone axes: x to the right of the screen, y to its top, z out of the screen.',
     'Chrome gives a web page at most 60 readings a second from the motion sensors and 10 from the magnetometer.',
   );
+  if (state.attitudeFrom) lines.push(`In the last session the drift view took the heading of the car from phone_${state.attitudeFrom}.`);
   const absent = sensorStates().filter(({ state: phase }) => ['missing', 'blocked', 'failed', 'waiting'].includes(phase));
   if (absent.length) lines.push('', 'Not recorded in the last session:', ...absent.map(({ name, detail }) => `${name}: ${detail}`));
   return `${lines.join('\r\n')}\r\n`;

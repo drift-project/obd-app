@@ -51,6 +51,23 @@ function horizontal(q, v) {
   return [v[0] + w * tx + (y * tz - z * ty), v[1] + w * ty + (z * tx - x * tz)];
 }
 
+/**
+ * Which attitude stream the heading is taken from. `current` is the stream in
+ * use (null before the first sample) and `name` the stream a sample has just
+ * come from. Returns the stream to use from now on, or null when the sample
+ * is to be left out.
+ *
+ * The attitude without the compass wins as soon as it delivers: in a car the
+ * compass is bent by the steel around it and by currents, and on a real drive
+ * the heading taken from it wandered by tens of degrees. The attitude with
+ * the compass serves until then, and on a phone that has no other.
+ */
+export function pickAttitude(current, name) {
+  if (name === 'relative_orientation') return name;
+  if (name === 'orientation' && current !== 'relative_orientation') return name;
+  return null;
+}
+
 /** Columns of the recorded `drift` stream, after the timestamp. */
 export const DRIFT_STREAM = {
   name: 'drift',
@@ -135,10 +152,22 @@ export class DriftEstimator {
     return this.#path;
   }
 
-  /** Attitude of the phone at `time` (ms): unit quaternion [x, y, z, w]. */
-  attitude(time, quaternion) {
+  /**
+   * Attitude of the phone at `time` (ms): unit quaternion [x, y, z, w].
+   * `restart` says that it comes from another sensor than the sample before.
+   * The two sensors do not agree on where zero is, so the step between them
+   * is not a turn of the car, and what was summed in the frame of the old
+   * one cannot be carried into the new.
+   */
+  attitude(time, quaternion, restart = false) {
     if (!quaternion.every(Number.isFinite)) return;
-    if (this.#last) this.#yaw += yawBetween(this.#last, quaternion);
+    if (restart) {
+      this.#sums.length = 0;
+      this.#match = DELAYS_MS.map(() => ({ re: 0, im: 0, energy: 0 }));
+      this.#aided = false;
+    } else if (this.#last) {
+      this.#yaw += yawBetween(this.#last, quaternion);
+    }
     this.#last = quaternion;
     this.#turns.push([time, this.#yaw]);
     while (this.#turns.length > 2 && this.#turns[0][0] < time - HISTORY_MS) this.#turns.shift();

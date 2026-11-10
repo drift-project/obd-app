@@ -3,6 +3,7 @@
 // saved or shared from it (CSV files, or the ZIP archive with all of them).
 
 import { SignalChart } from './chart.js';
+import { driftTable } from './drift-replay.js';
 import { Recording, parseCsv, skipGap, streamOf } from './replay.js';
 import { unzip } from './zip.js';
 
@@ -21,6 +22,7 @@ const STREAM_TITLES = {
   obd: 'car',
   gps: 'GPS',
   drift: 'drift view',
+  drift_recorded: 'drift view, as recorded',
   accelerometer: 'accelerometer',
   linear_acceleration: 'acceleration, no gravity',
   gyroscope: 'gyroscope',
@@ -36,6 +38,9 @@ const TRACK_POINTS = 5000;
 const CAR_HOLD_MS = 5000;
 const DRIFT_HOLD_MS = 1500;
 const GPS_HOLD_MS = 3000;
+// A fix tells where the car was about half a second before it reached the app (0.45 to 0.6 s on the first real
+// drives). A replay knows what came later, so the place at a moment is read from the fixes that much further on.
+const GPS_LATE_MS = 500;
 
 const decoder = new TextDecoder();
 const two = (value) => String(value).padStart(2, '0');
@@ -176,7 +181,14 @@ export class ReplayView {
 
   #open(tables, source, problems = []) {
     const $ = this.#$;
-    const recording = new Recording(tables);
+    let recording = new Recording(tables);
+    // The drift angle is worked out again from the recorded sensors, so an old log is not stuck with what its
+    // version made of them. What the drive itself showed stays in the recording under another name.
+    const again = recording.empty ? null : driftTable(recording);
+    if (again) {
+      const kept = tables.map((table) => (table.stream === 'drift' ? { ...table, stream: 'drift_recorded' } : table));
+      recording = new Recording([...kept, { stream: 'drift', ...again }]);
+    }
     for (const stream of recording.skipped) problems.push(`"${stream}" has no times in milliseconds in its first column`);
     const trouble = problems.length ? ` Left out: ${problems.join('; ')}.` : '';
     this.#play(false);
@@ -207,22 +219,30 @@ export class ReplayView {
     this.#listSignals();
     const pauses = this.#breaks.length;
     const skipped = pauses > 0 ? `, ${pauses} pause${pauses > 1 ? 's' : ''} that the replay jumps over` : '';
-    this.#text('replay-info', `${source}: ${clock(recording.start)} to ${clock(recording.end)}, ${recording.signals.length} signals${skipped}.${trouble}`);
+    const reworked = again ? ' The drift angle is worked out again from the recorded sensors.' : '';
+    this.#text('replay-info', `${source}: ${clock(recording.start)} to ${clock(recording.end)}, ${recording.signals.length} signals${skipped}.${reworked}${trouble}`);
     $('replay-body').hidden = false;
     $('replay-map').hidden = this.#positions === null;
   }
 
-  /** The driven line for the map, from the positions of the drift view if it recorded them, else from GPS. */
+  /**
+   * The driven line for the map. It goes through the GPS fixes. The positions of the drift view are a second
+   * choice: during the drive they had to be guessed ahead of each fix, which leaves a jagged line.
+   */
   #buildTrack() {
     const recording = this.#recording;
-    this.#positions = ['drift', 'gps'].find((stream) => recording.has(`${stream}.latitude_deg`) && recording.has(`${stream}.longitude_deg`)) ?? null;
+    this.#positions = ['gps', 'drift'].find((stream) => recording.has(`${stream}.latitude_deg`) && recording.has(`${stream}.longitude_deg`)) ?? null;
     this.#track = [];
     if (!this.#positions) return;
-    const latitudes = recording.series(`${this.#positions}.latitude_deg`).values;
+    const { times, values: latitudes } = recording.series(`${this.#positions}.latitude_deg`);
     const longitudes = recording.series(`${this.#positions}.longitude_deg`).values;
     const count = Math.min(latitudes.length, longitudes.length);
     const stride = Math.max(1, Math.ceil(count / TRACK_POINTS));
-    for (let index = 0; index < count; index += stride) this.#track.push([latitudes[index], longitudes[index]]);
+    for (let index = 0; index < count; index += stride) {
+      // A fix that is tens of metres off would only scribble on the map.
+      if (recording.value('gps.accuracy_m', times[index], 0) > 50) continue;
+      this.#track.push([latitudes[index], longitudes[index]]);
+    }
   }
 
   // Charts ----------------------------------------------------------------------
@@ -361,9 +381,11 @@ export class ReplayView {
 
     if (this.#positions) {
       // Between two positions the car moves along the straight line from one to the next.
-      const hold = this.#positions === 'drift' ? DRIFT_HOLD_MS : GPS_HOLD_MS;
-      const latitude = recording.interpolate(`${this.#positions}.latitude_deg`, time, hold);
-      const longitude = recording.interpolate(`${this.#positions}.longitude_deg`, time, hold);
+      const fromGps = this.#positions === 'gps';
+      const hold = fromGps ? GPS_HOLD_MS : DRIFT_HOLD_MS;
+      const at = fromGps ? time + GPS_LATE_MS : time;
+      const latitude = recording.interpolate(`${this.#positions}.latitude_deg`, at, hold);
+      const longitude = recording.interpolate(`${this.#positions}.longitude_deg`, at, hold);
       const known = latitude !== null && longitude !== null;
       this.#map.draw({
         position: known ? { latitude, longitude } : null,

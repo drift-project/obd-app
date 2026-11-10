@@ -64,7 +64,25 @@ export function plotPath(points, from, to, min, max, breaks = []) {
   return alone ? `${path}h0` : path;
 }
 
+/**
+ * Where marked stretches of time go in the plot: `marks` are `[{ from, to,
+ * kind }]` and the result `[{ x, width, kind }]` for the window `from` to
+ * `to`, cut off at its edges, without the marks that lie outside it.
+ */
+export function markBoxes(marks, from, to) {
+  const span = to - from || 1;
+  const boxes = [];
+  for (const mark of marks) {
+    const left = Math.max(mark.from, from);
+    const right = Math.min(mark.to, to);
+    if (right <= left) continue;
+    boxes.push({ x: ((left - from) / span) * WIDTH, width: ((right - left) / span) * WIDTH, kind: mark.kind });
+  }
+  return boxes;
+}
+
 export class SignalChart {
+  #marks = svg('g', { class: 'chart-marks' });
   #line = svg('path', { class: 'chart-line', d: '' });
   #cursor = svg('line', { class: 'chart-cursor', x1: 0, x2: 0, y1: 0, y2: HEIGHT });
   #value = node('strong', 'chart-value', '--');
@@ -89,7 +107,7 @@ export class SignalChart {
     remove.addEventListener('click', onRemove);
     head.append(node('span', 'chart-name', name), node('span', 'chart-source', source), this.#value, remove);
     const plot = svg('svg', { class: 'chart-plot', viewBox: `0 0 ${WIDTH} ${HEIGHT}`, preserveAspectRatio: 'none' });
-    plot.append(this.#line, this.#cursor);
+    plot.append(this.#marks, this.#line, this.#cursor);
     plot.addEventListener('click', (event) => {
       const box = plot.getBoundingClientRect();
       if (box.width > 0) onSeek(Math.min(Math.max((event.clientX - box.left) / box.width, 0), 1));
@@ -104,13 +122,19 @@ export class SignalChart {
   /**
    * Draw `points` ([[time, value], ...]) for the window `from` to `to`. `min`
    * and `max` are the signal's whole range, so the scale stays put from one
-   * window to the next. `breaks` are the times where the line is interrupted.
+   * window to the next. `breaks` are the times where the line is interrupted
+   * and `marks` (`[{ from, to, kind }]`) stretches of time shaded behind it.
    */
-  draw(points, from, to, min, max, breaks = []) {
+  draw(points, from, to, min, max, breaks = [], marks = []) {
     this.#from = from;
     this.#to = to;
     this.#min = min;
     this.#max = max;
+    this.#marks.replaceChildren(
+      ...markBoxes(marks, from, to).map(({ x, width, kind }) =>
+        svg('rect', { class: `chart-mark chart-mark-${kind}`, x: x.toFixed(1), y: 0, width: Math.max(width, 2).toFixed(1), height: HEIGHT }),
+      ),
+    );
     this.#line.setAttribute('d', plotPath(points, from, to, min, max, breaks));
     this.#high.textContent = formatValue(max, min, max);
     this.#low.textContent = max > min ? formatValue(min, min, max) : '';

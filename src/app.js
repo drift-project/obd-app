@@ -20,7 +20,7 @@ import { Trace } from './trace.js';
 import { WebSerialTransport, pickPort } from './transports.js';
 import { zip } from './zip.js';
 
-const APP_VERSION = '0.6.1';
+const APP_VERSION = '0.6.2';
 const RPM_MAX = 8000;
 const REDLINE = 0.85;
 const FLUSH_MS = 1000; // a killed page loses at most about this much of the log
@@ -32,6 +32,9 @@ const PROTOCOL_KEY = 'drifthing-obd-protocol';
 const ADAPTER_KEY = 'drifthing-obd-adapter-picked'; // '1' once an adapter was picked in the chooser
 const VIEW_KEY = 'drifthing-obd-view';
 const BATTERY_KEY = 'drifthing-obd-battery'; // capacity, type and voltmeter correction as JSON
+const READ_MODE_KEY = 'drifthing-obd-read-mode'; // 'all' or 'drift': what the requests to the car are spent on
+const SESSIONS_KEY = 'drifthing-obd-sessions'; // which version recorded which part of the log, as JSON
+const MAX_SESSIONS = 60;
 const ZOOM_KEY = 'drifthing-obd-map-zoom';
 const LAYER_KEY = 'drifthing-obd-map-layer'; // 'map' or 'orthophoto'
 const VIEWS = ['car', 'drift', 'replay'];
@@ -101,6 +104,9 @@ const state = {
   gps: null, // the newest position sample of the running session
   clock: null, // steady epoch clock of the running session
   prepared: null, // export files built for the log as it is now
+  readMode: 'all', // 'all' or 'drift', see OBDPoller
+  sessions: [], // the recording sessions whose data is in the log
+  session: null, // the running one
 };
 
 const activeRows = () => (state.mode === 'demo' ? state.demoRows : state.rows);
@@ -480,6 +486,64 @@ function onProgress(text) {
   state.dirty = true;
 }
 
+// The log outlives the version that recorded it: it stays in the browser while the app is updated, and
+// one log can hold drives recorded by several versions. So every recording session is written down
+// with its version, and the description of a saved log lists them.
+
+function loadSessions() {
+  try {
+    const saved = JSON.parse(readStored(SESSIONS_KEY));
+    if (Array.isArray(saved)) state.sessions = saved.filter((session) => Number.isFinite(session?.started));
+  } catch {
+    // Nothing written down yet, or a damaged copy: the log is still there, only undescribed.
+  }
+}
+
+function saveSessions() {
+  state.sessions = state.sessions.slice(-MAX_SESSIONS);
+  writeStored(SESSIONS_KEY, JSON.stringify(state.sessions));
+}
+
+/** The demo is not in the log, so it is not written down. */
+function openSession(mode) {
+  if (mode === 'demo') return;
+  state.session = { started: Math.round(state.clock.now()), ended: null, version: APP_VERSION, mode, read: mode === 'serial' ? state.readMode : null };
+  state.sessions.push(state.session);
+  saveSessions();
+}
+
+/** Bring what is known about the running session up to date; called when it ends and when the page may be about to go. */
+function noteSession() {
+  const session = state.session;
+  if (!session) return;
+  session.ended = Math.round(state.clock.now());
+  session.heading = state.attitudeFrom;
+  if (session.mode === 'serial') {
+    session.read = state.readMode;
+    session.adapter = state.carInfo?.elmVersion || null;
+    session.protocol = state.carInfo?.protocol || null;
+  }
+  saveSessions();
+}
+
+function closeSession() {
+  noteSession();
+  state.session = null;
+}
+
+/** One session as a line of the log description. */
+function sessionText(session) {
+  const from = new Date(session.started);
+  const day = from.toLocaleDateString('en-GB');
+  const until = session.ended ? clockTime(new Date(session.ended)) : 'not closed (the page was shut while recording)';
+  const parts = [`app ${session.version}`, session.mode === 'serial' ? 'car and phone' : 'phone only'];
+  if (session.read) parts.push(session.read === 'drift' ? 'car read for drifting' : 'car read in full');
+  if (session.adapter) parts.push(session.adapter);
+  if (session.protocol) parts.push(protocolText(session.protocol));
+  if (session.heading) parts.push(`heading from phone_${session.heading}`);
+  return `${day} ${clockTime(from)} to ${until}: ${parts.join(', ')}`;
+}
+
 /** Start a session: 'serial' and 'demo' read a car through `makeElm`, 'phone' records the phone sensors alone. */
 function start(mode, makeElm = null) {
   if (state.controller) return;
@@ -503,10 +567,12 @@ function start(mode, makeElm = null) {
   if (mode === 'demo') startDemoDrive();
   else startSensors();
   if (mode === 'phone') state.trace.note('recording the phone sensors without the car');
+  if (makeElm) activeTrace().note(`read mode: ${state.readMode === 'drift' ? 'for drifting' : 'everything'}`);
+  openSession(mode);
   updateControls();
   const { signal } = state.controller;
   const session = makeElm
-    ? run(makeElm, { signal, sink, status: onStatus, trace: activeTrace(), clock: state.clock.now })
+    ? run(makeElm, { signal, sink, status: onStatus, trace: activeTrace(), clock: state.clock.now, mode: () => state.readMode })
     : new Promise((resolve) => {
         signal.addEventListener('abort', resolve, { once: true });
       });
@@ -518,6 +584,7 @@ function start(mode, makeElm = null) {
     .finally(() => {
       stopSensors();
       stopDemoDrive();
+      closeSession();
       state.mode = null;
       state.controller = null;
       state.latest.clear();
@@ -657,9 +724,16 @@ function logInfo(stamp, rows) {
     'Phone axes: x to the right of the screen, y to its top, z out of the screen.',
     'Chrome gives a web page at most 60 readings a second from the motion sensors and 10 from the magnetometer.',
   );
-  if (state.attitudeFrom) lines.push(`In the last session the drift view took the heading of the car from phone_${state.attitudeFrom}.`);
+  noteSession();
+  if (state.sessions.length) {
+    lines.push('', 'Recording sessions in this log, each with the version of the app that recorded it:', ...state.sessions.map(sessionText));
+  } else {
+    lines.push('', 'Which version recorded this log was not written down (before 0.6.2 it was not); the first line names the version that saved it.');
+  }
   const absent = sensorStates().filter(({ state: phase }) => ['missing', 'blocked', 'failed', 'waiting'].includes(phase));
   if (absent.length) lines.push('', 'Not recorded in the last session:', ...absent.map(({ name, detail }) => `${name}: ${detail}`));
+  // Everything that is needed to judge a recording from a distance travels in the one archive.
+  lines.push('', '--- Diagnostic report ---', ...reportText().split('\n'));
   return `${lines.join('\r\n')}\r\n`;
 }
 
@@ -784,6 +858,9 @@ function clear() {
     state.prepared = null;
     enqueue(() => state.store.clear());
     enqueue(() => state.sampleStore.clear());
+    // What is left of the log is what the running session records from here on.
+    state.sessions = state.session ? [state.session] : [];
+    saveSessions();
     markSaved();
   }
   state.dirty = true;
@@ -1053,8 +1130,28 @@ function buildPhoneList() {
   }
 }
 
+let tilesNotedAt = -Infinity;
+
+/** A map without its pictures is worth a line in the diagnostic log, but not one for every piece. */
+function noteTileError(layer) {
+  const now = performance.now();
+  if (now - tilesNotedAt < 60000) return;
+  tilesNotedAt = now;
+  state.trace.note(`map: pieces of the layer "${layer}" did not load (no connection, or the server refused)`);
+}
+
+function setReadMode(mode) {
+  state.readMode = mode === 'drift' ? 'drift' : 'all';
+  writeStored(READ_MODE_KEY, state.readMode);
+  $('read-mode').value = state.readMode;
+  if (state.controller && state.mode !== 'phone') activeTrace().note(`read mode: ${state.readMode === 'drift' ? 'for drifting' : 'everything'}`);
+}
+
 async function init() {
   buildPhoneList();
+  loadSessions();
+  setReadMode(readStored(READ_MODE_KEY));
+  $('read-mode').addEventListener('change', (event) => setReadMode(event.target.value));
   // The maps of the drift view and of the replay show the same layer at the same zoom, kept for the next start.
   const maps = [];
   const mapOptions = {
@@ -1065,6 +1162,7 @@ async function init() {
       writeStored(LAYER_KEY, settings.layer);
       for (const map of maps) map.show(settings);
     },
+    onTileError: noteTileError,
   };
   state.map = new TrackMap($('map'), mapOptions);
   const replayMap = new TrackMap($('replay-map'), mapOptions);
@@ -1122,6 +1220,7 @@ async function init() {
   addEventListener('pagehide', () => {
     flush();
     saveTrace();
+    noteSession();
   });
   document.addEventListener('visibilitychange', () => {
     const visible = document.visibilityState === 'visible';
@@ -1133,6 +1232,8 @@ async function init() {
     if (behind) activeTrace().note(`the clock of the recording was ${(behind / 1000).toFixed(1)} s behind after the pause and was moved on`);
     flush();
     saveTrace();
+    // A hidden page may never come back: what is known about the session is written down now.
+    if (!visible) noteSession();
     if (state.controller) keepAwake(true);
   });
 

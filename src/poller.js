@@ -8,6 +8,9 @@ export const SLOW_INTERVAL_MS = 1000;
 // With the engine running the battery voltage changes slowly. With it off the
 // voltage is read on every row, so the sag under the starter is not missed.
 export const VOLTAGE_INTERVAL_MS = 5000;
+// Read for drifting, the engine temperature and the voltage come this often: enough to see the
+// engine get hot, and nearly all requests are left for the wheels, the driver's foot and the revs.
+export const DRIFT_SLOW_INTERVAL_MS = 10000;
 // The driver is watching the screen, so the wait between attempts stays short.
 export const RECONNECT_MAX_MS = 8000;
 // A few seconds of "NO DATA" means ignition off or the adapter lost the bus.
@@ -17,16 +20,31 @@ export const QUIET_AFTER_POLLS = 20;
 export const SUMMARY_INTERVAL_MS = 30000;
 
 const COLUMNS = [...FAST_PIDS, ...SLOW_PIDS];
+const RPM = 0x0c;
+const SPEED = 0x0d;
+const THROTTLE = 0x11;
+const PEDAL = 0x49;
+const COOLANT = 0x05;
 
 /** PIDs as the two-digit hex numbers used in OBD documentation: "04 05 0C". */
 export const pidList = (pids) => pids.map((pid) => pid.toString(16).toUpperCase().padStart(2, '0')).join(' ');
 
-/** One adapter session: fast PIDs every cycle, slow PIDs round robin. */
+/**
+ * One adapter session: fast PIDs every cycle, slow PIDs round robin.
+ *
+ * `mode()` says what the readings are for and is asked on every cycle: 'all'
+ * reads everything the car has, 'drift' gives the requests to what a drift is
+ * judged by. That matters where every value is a request of its own (a
+ * K-line car answers about four a second): the speed of the wheels is then
+ * read twice a cycle, the driver's foot and the revs once, and of the slow
+ * values only the engine temperature, every ten seconds.
+ */
 export class OBDPoller {
-  constructor(elm, { clock = Date.now, slowIntervalMs = SLOW_INTERVAL_MS } = {}) {
+  constructor(elm, { clock = Date.now, slowIntervalMs = SLOW_INTERVAL_MS, mode = () => 'all' } = {}) {
     this.elm = elm;
     this.clock = clock;
     this.slowIntervalMs = slowIntervalMs;
+    this.mode = mode;
     this.fast = [];
     this.slow = [];
     this.slowIndex = 0;
@@ -51,6 +69,14 @@ export class OBDPoller {
   supportedFields() {
     const fields = [...this.fast, ...this.slow].map((pid) => PIDS.get(pid).name);
     return this.hasVoltage ? [...fields, VOLTAGE_FIELD] : fields;
+  }
+
+  /** What one cycle asks for where every value is a request of its own. */
+  singles(drift) {
+    if (!drift) return this.fast;
+    // Where the car tells the pedal, that is the driver's foot; the throttle plate is the next best thing.
+    const foot = this.fast.includes(PEDAL) ? PEDAL : THROTTLE;
+    return [SPEED, foot, SPEED, RPM].filter((pid) => this.fast.includes(pid));
   }
 
   /**
@@ -80,19 +106,22 @@ export class OBDPoller {
       if (single && values.size) rows.push(row(time, values));
     };
 
+    const drift = this.mode() === 'drift';
     const cycleStart = this.clock();
-    if (single) for (const pid of this.fast) await query([pid]);
+    if (single) for (const pid of this.singles(drift)) await query([pid]);
     else if (this.fast.length) await query(this.fast);
-    if (this.slow.length && cycleStart - this.lastSlow >= this.slowIntervalMs) {
-      const pid = this.slow[this.slowIndex % this.slow.length];
+    const slow = drift ? this.slow.filter((pid) => pid === COOLANT) : this.slow;
+    if (slow.length && cycleStart - this.lastSlow >= (drift ? DRIFT_SLOW_INTERVAL_MS : this.slowIntervalMs)) {
+      const pid = slow[this.slowIndex % slow.length];
       this.slowIndex += 1;
       this.lastSlow = cycleStart;
       await query([pid]);
     }
     let volts = null;
     if (this.hasVoltage) {
-      const rpm = seen.get(0x0c);
-      const interval = rpm !== undefined && rpm >= RUNNING_RPM ? VOLTAGE_INTERVAL_MS : 0;
+      const rpm = seen.get(RPM);
+      const running = rpm !== undefined && rpm >= RUNNING_RPM;
+      const interval = !running ? 0 : drift ? DRIFT_SLOW_INTERVAL_MS : VOLTAGE_INTERVAL_MS;
       if (cycleStart - this.lastVoltage >= interval) {
         this.lastVoltage = cycleStart;
         const [reading, time] = await timed(() => this.elm.readVoltage());
@@ -130,6 +159,7 @@ export function abortableSleep(ms, signal) {
  * Keep an adapter session alive until `signal` aborts, reconnecting with backoff.
  * `sink(row)` gets every row, `status(info)` gets phase changes and a periodic rate.
  * `trace` (optional) records the adapter conversation and what happened to the session.
+ * `mode()` is 'all' or 'drift', see OBDPoller.
  */
 export async function run(
   makeElm,
@@ -143,6 +173,7 @@ export async function run(
     now = () => performance.now(),
     clock = Date.now,
     trace = null,
+    mode = () => 'all',
   } = {},
 ) {
   let backoffMs = 1000;
@@ -189,7 +220,7 @@ export async function run(
       trace.quiet = false;
       trace.note('connecting');
     }
-    const poller = new OBDPoller(elm, { clock });
+    const poller = new OBDPoller(elm, { clock, mode });
     // Closing the transport breaks a pending read, so disconnecting is immediate.
     const onAbort = () => {
       elm.close().catch(() => {});

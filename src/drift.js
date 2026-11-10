@@ -147,7 +147,10 @@ export class DriftEstimator {
     return this.#calibrated;
   }
 
-  /** The driven line as [latitude, longitude], with points between the fixes where the accelerometer gave them. */
+  /**
+   * The driven line as [latitude, longitude, drift angle], with points between the fixes where the
+   * accelerometer gave them. The angle is in degrees, or null where it was not known.
+   */
   get path() {
     return this.#path;
   }
@@ -300,11 +303,12 @@ export class DriftEstimator {
           const east = point.movedEast + share * (real.east - end.movedEast);
           const north = point.movedNorth + share * (real.north - end.movedNorth);
           const place = offsetBy(previous.position, east, north);
-          this.#path.push([place.latitude, place.longitude]);
+          const between = previous.slip !== null && fix.slip !== null ? previous.slip + wrap180(fix.slip - previous.slip) * share : fix.slip;
+          this.#path.push([place.latitude, place.longitude, between]);
         }
       }
     }
-    this.#path.push([fix.position.latitude, fix.position.longitude]);
+    this.#path.push([fix.position.latitude, fix.position.longitude, fix.slip]);
     if (this.#path.length > PATH_LIMIT) this.#path = this.#path.slice(-Math.round(PATH_LIMIT * 0.8));
   }
 
@@ -335,10 +339,14 @@ export class DriftEstimator {
     const seconds = previous ? (time - previous.arrived) / 1000 : 0;
     const consecutive = previous !== null && seconds > 0.2 && seconds < 2.5;
     if (consecutive && previous.east !== null && fix.east !== null) this.#learn(previous, fix);
-    // A fix that is tens of metres off would only scribble on the map.
-    if (fix.position && !(accuracy > 50)) this.#extendPath(consecutive ? previous : null, fix);
+    // A fix that is tens of metres off would only scribble on the map. The line is extended last,
+    // once the drift angle at this fix is known: the line carries it.
+    const extend = () => {
+      if (fix.position && !(accuracy > 50)) this.#extendPath(consecutive ? previous : null, fix);
+    };
     if (!moving) {
       this.#straightFixes = 0;
+      extend();
       return;
     }
 
@@ -368,6 +376,7 @@ export class DriftEstimator {
       }
     }
     if (this.#calibrated && yaw !== null) fix.slip = wrap180(this.#offset - yaw - course);
+    extend();
   }
 
   /**

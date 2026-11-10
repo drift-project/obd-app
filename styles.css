@@ -405,7 +405,6 @@ small {
 
 /* On a picture the line needs a dark edge to stand out. */
 .map-tiles:not([data-layer='map']) ~ .map-overlay .map-path {
-  stroke: var(--blue);
   filter: drop-shadow(0 0 1.5px rgb(0 0 0 / 0.9));
 }
 
@@ -422,9 +421,9 @@ small {
   user-select: none;
 }
 
-.map-path {
+/* The driven line: runs of one colour each, the colour set by the drift angle. */
+.map-path polyline {
   fill: none;
-  stroke: var(--blue-deep);
   stroke-width: 4;
   stroke-linecap: round;
   stroke-linejoin: round;
@@ -482,17 +481,46 @@ small {
   letter-spacing: 0.02em;
 }
 
+/* Sits over the map, so it brings its own background. */
 .map-hint {
   position: absolute;
-  inset: 40% 16px auto;
+  top: 40%;
+  left: 50%;
+  max-width: calc(100% - 32px);
   margin: 0;
+  padding: 4px 10px;
+  border-radius: 8px;
+  background: rgb(5 9 14 / 0.75);
   color: var(--muted);
   font-size: 0.9375rem;
   text-align: center;
+  transform: translateX(-50%);
 }
 
 .map-hint:empty {
   display: none;
+}
+
+/* What the colours of the line mean, in the corner opposite the credit. */
+.map-legend {
+  position: absolute;
+  bottom: 4px;
+  left: 6px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgb(5 9 14 / 0.75);
+  color: var(--muted);
+  font-size: 0.625rem;
+}
+
+.map-legend-ramp {
+  width: 44px;
+  height: 5px;
+  border-radius: 3px;
 }
 
 .map-credit {
@@ -547,6 +575,29 @@ small {
 .drift-angle dd {
   color: var(--blue);
   font-size: 2rem;
+}
+
+/* Where the wheels turn faster than the car moves (red) or slower (blue), the tile of the car's speed says so. */
+.drift-readouts [data-wheels='spin'] {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+.drift-readouts [data-wheels='lock'] {
+  border-color: var(--blue);
+  color: var(--blue);
+}
+
+.slip {
+  display: block;
+  margin: 3px 0 0;
+  color: inherit;
+  font: 700 0.75rem/1 system-ui, sans-serif;
+  white-space: nowrap;
+}
+
+.slip:empty {
+  display: none;
 }
 
 .drift-note {
@@ -605,6 +656,16 @@ small {
   font-size: 0.75rem;
 }
 
+/* What the requests to the car are spent on. */
+.read-mode {
+  flex: 1 0 100%;
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
+.read-mode select,
 .replay select {
   min-height: 48px;
   padding: 6px 10px;
@@ -718,6 +779,15 @@ small {
   stroke-linecap: round;
   stroke-linejoin: round;
   vector-effect: non-scaling-stroke;
+}
+
+/* Bands behind the line: the wheels turned faster than the car moved (red) or slower (blue). */
+.chart-mark-spin {
+  fill: rgb(255 70 64 / 0.24);
+}
+
+.chart-mark-lock {
+  fill: rgb(66 186 255 / 0.24);
 }
 
 .chart-cursor {

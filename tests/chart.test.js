@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { formatValue, plotPath } from '../src/chart.js';
+import { formatValue, markBoxes, plotPath } from '../src/chart.js';
 
 test('a value is written with the decimals its range calls for', () => {
   assert.equal(formatValue(3456.4, 700, 6500), '3456');
@@ -91,4 +91,20 @@ test('a value on its own between two pauses is drawn as a dot', () => {
 test('a signal that never changes runs through the middle, and no points give no line', () => {
   assert.equal(plotPath([[0, 7], [10, 7]], 0, 10, 7, 7), 'M0.0,50.0L1000.0,50.0');
   assert.equal(plotPath([], 0, 10, 0, 1), '');
+});
+
+test('marked stretches of time become boxes cut to the window', () => {
+  const marks = [
+    { from: 500, to: 900, kind: 'spin' }, // before the window
+    { from: 900, to: 1100, kind: 'spin' }, // reaches into it
+    { from: 1400, to: 1600, kind: 'lock' }, // inside
+    { from: 1900, to: 2500, kind: 'spin' }, // runs out of it
+    { from: 2100, to: 2200, kind: 'spin' }, // after it
+  ];
+  assert.deepEqual(markBoxes(marks, 1000, 2000), [
+    { x: 0, width: 100, kind: 'spin' },
+    { x: 400, width: 200, kind: 'lock' },
+    { x: 900, width: 100, kind: 'spin' },
+  ]);
+  assert.deepEqual(markBoxes([], 1000, 2000), []);
 });

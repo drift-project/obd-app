@@ -35,6 +35,32 @@ export const LAYERS = [
   },
 ];
 
+// The driven line is coloured by the drift angle at each of its points: blue where the car goes the way
+// it points, then through violet and pink to red at this many degrees and beyond.
+export const FULL_ANGLE = 35;
+const SHADES = 12; // the line is drawn in runs of one shade, so the shades are few
+const RAMP = [
+  [66, 186, 255],
+  [143, 125, 255],
+  [228, 85, 200],
+  [255, 70, 64],
+];
+
+/** The shade of the line, from 0 to SHADES - 1, for a drift angle in degrees to either side (null: not known). */
+export function angleShade(angle) {
+  if (angle === null || angle === undefined || Number.isNaN(angle)) return 0;
+  return Math.round((Math.min(Math.abs(angle), FULL_ANGLE) / FULL_ANGLE) * (SHADES - 1));
+}
+
+/** The colour of a shade as CSS. */
+export function shadeColor(shade) {
+  const along = (Math.max(0, Math.min(SHADES - 1, shade)) / (SHADES - 1)) * (RAMP.length - 1);
+  const from = Math.min(Math.floor(along), RAMP.length - 2);
+  const share = along - from;
+  const mixed = RAMP[from].map((value, index) => Math.round(value + (RAMP[from + 1][index] - value) * share));
+  return `rgb(${mixed.join(', ')})`;
+}
+
 const SVG = 'http://www.w3.org/2000/svg';
 
 function svg(name, attributes = {}, children = []) {
@@ -64,6 +90,7 @@ export class TrackMap {
   #zoom;
   #layer;
   #onChange;
+  #onTileError;
   #images = new Map(); // "layer/zoom/x/y" -> img
   #borrowed = new Set(); // keys of the tiles that show the drawn map because their layer has no picture there
   #drawn = { points: null, length: -1, zoom: -1, anchor: null };
@@ -71,16 +98,18 @@ export class TrackMap {
   /**
    * Builds the map inside `view`, an empty box with a size. `zoom` and
    * `layer` are where it starts; `onChange({ zoom, layer })` is called when
-   * the buttons on the map change them.
+   * the buttons on the map change them and `onTileError(layer)` when a piece
+   * of the map could not be loaded at all.
    */
-  constructor(view, { zoom = 18, layer = 'map', onChange = () => {} } = {}) {
+  constructor(view, { zoom = 18, layer = 'map', onChange = () => {}, onTileError = () => {} } = {}) {
     this.#view = view;
     this.#zoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Math.round(zoom) || 18));
     this.#layer = LAYERS.find(({ id }) => id === layer) ?? LAYERS[0];
     this.#onChange = onChange;
+    this.#onTileError = onTileError;
 
     this.#tiles = html('div', 'map-tiles');
-    this.#path = svg('polyline', { class: 'map-path', points: '', hidden: '' });
+    this.#path = svg('g', { class: 'map-path', hidden: '' });
     this.#course = svg('g', { class: 'map-course', hidden: '' }, [svg('line', { x1: 0, y1: 0, x2: 0, y2: -52 }), svg('path', { d: 'M -6 -50 L 0 -62 L 6 -50 Z' })]);
     this.#body = svg('g', { class: 'map-body', hidden: '' }, [
       svg('rect', { x: -9, y: -19, width: 18, height: 38, rx: 6 }),
@@ -104,7 +133,12 @@ export class TrackMap {
     controls.append(button('+', 'Zoom in', () => this.#zoomBy(1)), button('-', 'Zoom out', () => this.#zoomBy(-1)), this.#layerButton);
     this.#hint = html('p', 'map-hint');
     this.#credit = html('p', 'map-credit', this.#layer.credit);
-    view.replaceChildren(this.#tiles, overlay, controls, this.#hint, this.#credit);
+    // What the colours of the line stand for.
+    const ramp = html('span', 'map-legend-ramp');
+    ramp.style.background = `linear-gradient(90deg, ${Array.from({ length: SHADES }, (_, shade) => shadeColor(shade)).join(', ')})`;
+    const legend = html('p', 'map-legend');
+    legend.append(html('span', '', 'drift 0°'), ramp, html('span', '', `${FULL_ANGLE}°`));
+    view.replaceChildren(this.#tiles, overlay, controls, this.#hint, legend, this.#credit);
     this.#tiles.dataset.layer = this.#layer.id;
   }
 
@@ -166,6 +200,7 @@ export class TrackMap {
             image.src = instead;
           } else {
             image.style.visibility = 'hidden';
+            this.#onTileError(this.#layer.id);
           }
         });
         image.src = this.#layer.url(this.#zoom, tile.x, tile.y);
@@ -187,7 +222,8 @@ export class TrackMap {
 
   /**
    * The line is written once per new point, in pixels around its first point,
-   * and moved as a whole on every frame.
+   * and moved as a whole on every frame. It is made of runs of one shade,
+   * each reaching to the first point of the next so that they join.
    */
   #drawPath(points, center, width, height) {
     const drawn = this.#drawn;
@@ -197,11 +233,20 @@ export class TrackMap {
       drawn.zoom = this.#zoom;
       drawn.anchor = points.length ? project(points[0][0], points[0][1], this.#zoom) : null;
       const anchor = drawn.anchor;
-      const text = points.map(([latitude, longitude]) => {
+      const runs = [];
+      let run = null;
+      for (const [latitude, longitude, angle = null] of points) {
         const point = project(latitude, longitude, this.#zoom);
-        return `${(point.x - anchor.x).toFixed(1)},${(point.y - anchor.y).toFixed(1)}`;
-      });
-      this.#path.setAttribute('points', text.join(' '));
+        const place = `${(point.x - anchor.x).toFixed(1)},${(point.y - anchor.y).toFixed(1)}`;
+        const shade = angleShade(angle);
+        if (run && run.shade !== shade) run.places.push(place);
+        if (!run || run.shade !== shade) {
+          run = { shade, places: [] };
+          runs.push(run);
+        }
+        run.places.push(place);
+      }
+      this.#path.replaceChildren(...runs.map(({ shade, places }) => svg('polyline', { points: places.join(' '), stroke: shadeColor(shade) })));
     }
     if (drawn.anchor) {
       const left = drawn.anchor.x - center.x + width / 2;
@@ -213,8 +258,10 @@ export class TrackMap {
   /**
    * Draw the map around `position` ({ latitude, longitude }, or null when it
    * is not known yet). `points` are the places driven so far as [latitude,
-   * longitude]; `heading` and `course` are degrees clockwise from north or
-   * null. Without a heading the car is turned along the course.
+   * longitude, drift angle], the angle in degrees or null, which gives the
+   * line its colour; `heading` and `course` are degrees clockwise from north
+   * or null. Without a heading the car is turned along the course, and
+   * without either only the map and the line are shown.
    */
   draw({ position, points, heading, course }) {
     const width = this.#view.clientWidth;

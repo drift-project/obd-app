@@ -3,7 +3,7 @@ import { test } from 'node:test';
 
 import { ELM327, ELM327Error } from '../src/elm327.js';
 import { FAST_PIDS, FIELDS, PIDS, SLOW_PIDS } from '../src/pids.js';
-import { MAX_EMPTY_POLLS, OBDPoller, QUIET_AFTER_POLLS, SLOW_INTERVAL_MS, run } from '../src/poller.js';
+import { DRIFT_SLOW_INTERVAL_MS, MAX_EMPTY_POLLS, OBDPoller, QUIET_AFTER_POLLS, SLOW_INTERVAL_MS, run } from '../src/poller.js';
 import { ELM327Simulator, LoopbackTransport } from '../src/simulator.js';
 import { Trace } from '../src/trace.js';
 
@@ -365,4 +365,59 @@ test('run hands every row of a cycle to the log', async () => {
   const filled = rows.map((row) => FIELDS.find((_, index) => index > 0 && row[index] !== null));
   assert.deepEqual(filled, ['rpm', 'speed_kmh', 'throttle_pct', 'rpm', 'speed_kmh', 'throttle_pct']);
   assert.equal(statuses.at(-1).rows, 6);
+});
+
+// --- Reading for drifting ---------------------------------------------------------------
+
+const filledNames = (rows) => rows.map((row) => FIELDS.find((_, index) => index > 0 && row[index] !== null));
+
+async function makeDriftPoller(simulator, { clock = tickingClock(), mode = () => 'drift' } = {}) {
+  const poller = new OBDPoller(new ELM327(new LoopbackTransport(simulator), { timeoutMs: 500 }), { clock, mode });
+  await poller.connect();
+  return poller;
+}
+
+test('read for drifting, a K-line car gives the wheels twice a cycle and the foot and the revs once', async () => {
+  const simulator = new ELM327Simulator({ busProtocol: '3', supported: [0x04, 0x05, 0x0c, 0x0d, 0x0f, 0x11], rpm: 3000, voltage: 14.0 });
+  const clock = tickingClock();
+  const poller = await makeDriftPoller(simulator, { clock });
+  // The first cycle also brings the engine temperature and the voltage, which are due at once.
+  assert.deepEqual(filledNames(await poller.poll()), ['speed_kmh', 'throttle_pct', 'speed_kmh', 'rpm', 'coolant_c', 'battery_v']);
+  // After that, cycle after cycle of nothing but the four.
+  assert.deepEqual(filledNames(await poller.poll()), ['speed_kmh', 'throttle_pct', 'speed_kmh', 'rpm']);
+  assert.deepEqual(filledNames(await poller.poll()), ['speed_kmh', 'throttle_pct', 'speed_kmh', 'rpm']);
+  // Ten seconds on, the temperature and the voltage come again. The load and the intake air never do.
+  clock.now += DRIFT_SLOW_INTERVAL_MS;
+  assert.deepEqual(filledNames(await poller.poll()), ['speed_kmh', 'throttle_pct', 'speed_kmh', 'rpm', 'coolant_c', 'battery_v']);
+});
+
+test('read for drifting, the pedal stands for the foot of the driver where the car reports it', async () => {
+  const simulator = new ELM327Simulator({ busProtocol: '3', supported: [0x0c, 0x0d, 0x11, 0x49], rpm: 3000, rejected: ['RV'] });
+  const poller = await makeDriftPoller(simulator);
+  assert.deepEqual(filledNames(await poller.poll()), ['speed_kmh', 'pedal_pct', 'speed_kmh', 'rpm']);
+});
+
+test('the read mode can be changed while connected', async () => {
+  const simulator = new ELM327Simulator({ busProtocol: '3', supported: [0x0c, 0x0d, 0x11], rpm: 3000, rejected: ['RV'] });
+  let mode = 'all';
+  const poller = await makeDriftPoller(simulator, { mode: () => mode });
+  assert.deepEqual(filledNames(await poller.poll()), ['rpm', 'speed_kmh', 'throttle_pct']);
+  mode = 'drift';
+  assert.deepEqual(filledNames(await poller.poll()), ['speed_kmh', 'throttle_pct', 'speed_kmh', 'rpm']);
+  mode = 'all';
+  assert.deepEqual(filledNames(await poller.poll()), ['rpm', 'speed_kmh', 'throttle_pct']);
+});
+
+test('read for drifting, a CAN car keeps its fast values and of the slow ones only the engine temperature', async () => {
+  const clock = fakeClock();
+  const poller = await makeDriftPoller(new ELM327Simulator({ rpm: 3000 }), { clock });
+  const first = await pollRow(poller);
+  assert.ok(FAST_PIDS.every((pid) => column(first, pid) !== null));
+  assert.notEqual(column(first, 0x05), null);
+  assert.equal(column(first, 0x04), null);
+  clock.now += SLOW_INTERVAL_MS * 3;
+  const soon = await pollRow(poller);
+  assert.ok(SLOW_PIDS.every((pid) => column(soon, pid) === null));
+  clock.now += DRIFT_SLOW_INTERVAL_MS;
+  assert.notEqual(column(await pollRow(poller), 0x05), null);
 });

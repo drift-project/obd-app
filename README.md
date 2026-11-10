@@ -1,6 +1,6 @@
 # DRIFThing OBD (aplikacja na telefon)
 
-Strona WWW, która w Chrome łączy się z adapterem OBD2 ELM327 po Bluetooth, pokazuje dane z auta na żywo (obroty, prędkość, gaz, pedał, temperatury) i zapisuje je do CSV w tym samym formacie co logger na Raspberry (`obd_main.py` w repo `raspberry-unicore`). Razem z danymi auta zapisuje czujniki telefonu: akcelerometr, żyroskop, magnetometr, orientację i GPS.
+Strona WWW, która w Chrome łączy się z adapterem OBD2 ELM327 po Bluetooth, pokazuje dane z auta na żywo (obroty, prędkość, gaz, pedał, temperatury) i zapisuje je do CSV w tym samym formacie co logger na Raspberry (`obd_main.py` w repo `raspberry-unicore`). Razem z danymi auta zapisuje czujniki telefonu: akcelerometr, żyroskop, magnetometr, orientację i GPS. Zapisany przejazd da się odtworzyć w aplikacji: auto na mapie, wykresy dowolnych sygnałów, tempo od ×0,25 do ×16.
 
 To wersja na pierwszy test: bez instalacji, bez budowania, bez wysyłania danych na serwer.
 
@@ -52,7 +52,7 @@ Otwórz `http://localhost:8093`. Przycisk **Demo** pokazuje aplikację na symulo
 Demo ma trzy warianty, wybierane dopiskiem w adresie strony (lokalnie i pod adresem publicznym):
 
 - bez dopisku: auto z CAN, około 20 wierszy na sekundę,
-- `?car=kline`: stare auto z linią K (jak E39), jedna wartość na zapytanie, około 2 wierszy na sekundę,
+- `?car=kline`: stare auto z linią K (jak E39), jedna wartość na zapytanie, około 7 wierszy na sekundę (każda wartość w osobnym wierszu),
 - `?car=silent`: auto, które nie odpowiada; widać komunikat na ekranie i kolejne próby w dzienniku.
 
 ### Lokalna wersja na telefonie
@@ -90,7 +90,7 @@ Dziennik diagnostyczny przetrwa zamknięcie strony, więc można go wysłać tak
 E39 nie ma CAN na gnieździe diagnostycznym. Według list zgodności skanerów benzynowe wersje rozmawiają protokołem ISO 9141-2, a 530d protokołem KWP2000 (fast init). Dla aplikacji oznacza to:
 
 - **Wolniejszy odczyt.** Jedno zapytanie zwraca jedną wartość. W teście na E39 (10.11.2026) trwało około 240 ms, czyli auto daje około 4 wartości na sekundę: obroty, prędkość i gaz po około 1,2 Hz, a temperatury co około 6 s. To granica protokołu ISO 9141-2, nie aplikacji. Czas zapytania pokazuje pole "One request" w **Adapter details**.
-- **Wartości w wierszu są czytane po kolei.** Znacznik czasu wiersza to środek cyklu, więc pierwsza wartość (obroty) jest starsza o mniej więcej jedno zapytanie, a ostatnia młodsza. Na CAN szybkie wartości zwykle przychodzą jednym zapytaniem i różnicy nie ma.
+- **Każda wartość ma własny wiersz i własny czas.** Od wersji 0.6.0 wartość odczytana jednym zapytaniem trafia do osobnego wiersza ze znacznikiem czasu ze środka tego zapytania, a pozostałe komórki wiersza są puste. Wcześniej cały cykl (około sekundy) był jednym wierszem ze wspólnym czasem, więc wartości były przesunięte względem siebie nawet o 0,4 s. Liczba przy "Connected" i licznik wierszy liczą teraz wiersze, czyli na linii K pojedyncze wartości (około 4 na sekundę). Na CAN szybkie wartości przychodzą jednym zapytaniem i wiersz dalej jest całym cyklem.
 - **Szukanie protokołu z zapasem.** Aplikacja najpierw zleca adapterowi automatyczne szukanie, a gdy ono zawiedzie (zdarza się to na autach z ISO 9141-2), sama próbuje kolejno ISO 9141-2, KWP fast init i KWP z inicjalizacją 5 baud. Protokół, który zadziałał, jest zapamiętywany i przy następnym połączeniu idzie pierwszy.
 - **Mniej sygnałów.** Auto zgłasza, co obsługuje. Pedał gazu (PID 49) i ciśnienie w kolektorze w takim aucie zwykle będą oznaczone "n/a".
 - **Gniazdo.** Auta po liftingu (od około połowy 2000 roku) mają 16-pinowe gniazdo OBD w kabinie, pod kierownicą po stronie drzwi, za klapką. Starsze mają okrągłe gniazdo 20-pin pod maską i mogą wymagać przejściówki 20 na 16 pin.
@@ -157,7 +157,8 @@ Razem z danymi auta aplikacja zapisuje czujniki telefonu. Zapis startuje sam po 
 - **GPS** wymaga zgody na lokalizację przy pierwszym uruchomieniu i włączonej lokalizacji w telefonie.
 - **Dwie prędkości.** Na ekranie obok prędkości z auta (koła) jest prędkość z GPS (względem ziemi). Różnica między nimi to poślizg kół.
 - **Osie** są osiami telefonu: x w prawo ekranu, y w górę ekranu, z od ekranu w stronę patrzącego. Telefon musi być sztywno zamocowany, inaczej dane ruchu opisują telefon, a nie auto.
-- **Czas.** Każdy plik ma w pierwszej kolumnie `timestamp_ms` z jednego zegara: zegar telefonu jest odczytywany raz na starcie zapisu, a dalej liczy zegar monotoniczny, więc dane auta i telefonu da się zestawić. `phone_gps` ma dodatkowo `fix_ms`, czyli czas pomiaru podany przez odbiornik.
+- **Czas.** Każdy plik ma w pierwszej kolumnie `timestamp_ms` z jednego zegara: zegar telefonu jest odczytywany raz na starcie zapisu, a dalej liczy zegar monotoniczny, więc dane auta i telefonu da się zestawić. Czujniki ruchu dostają czas pomiaru podany przez czujnik, przeliczony na ten sam zegar. `phone_gps` ma w `timestamp_ms` chwilę, w której pozycja dotarła do aplikacji (zwykle kilkaset milisekund po pomiarze), a dodatkowo `fix_ms`, czyli czas pomiaru podany przez odbiornik. Opóźnienie GPS, które widok Drift wyznaczył z danych, jest w `phone_drift` w kolumnie `gps_delay_ms`.
+- **Po uśpieniu telefonu.** Zegar monotoniczny może stać, gdy telefon śpi, więc zapis po przerwie miałby czas cofnięty o długość uśpienia. Od wersji 0.6.0 po powrocie strony na wierzch zegar zapisu jest przestawiany do przodu na zegar telefonu (nigdy do tyłu), a dziennik diagnostyczny notuje, o ile.
 
 Stan każdego czujnika (częstotliwość, liczba próbek albo powód braku) pokazuje sekcja **Phone sensors**. Do loga dołączany jest plik `log_info` z opisem plików i kolumn.
 
@@ -178,7 +179,7 @@ Surowy magnetometr Chrome trzyma za funkcją `GenericSensorExtraClasses`, która
 
 ## Widok Drift
 
-Przełącznik **Car / Drift** pod nagłówkiem zmienia licznik na mapę, wzorowaną na trybie analizy w `drifthing-ui`: ślad przejazdu, auto obrócone tak, jak stoi nadwozie, strzałka kierunku jazdy i odczyty na żywo.
+Przełącznik **Car / Drift / Replay** pod nagłówkiem ma trzy zakładki. **Drift** zmienia licznik na mapę, wzorowaną na trybie analizy w `drifthing-ui`: ślad przejazdu, auto obrócone tak, jak stoi nadwozie, strzałka kierunku jazdy i odczyty na żywo.
 
 - **Drift angle**: kąt między kierunkiem nadwozia a kierunkiem jazdy, liczony jak w `middle-math` (kierunek nadwozia minus kurs, od -180 do 180 stopni). Litera obok mówi, w którą stronę od kierunku jazdy wskazuje nos: **R** w prawo, **L** w lewo.
 - **GPS** i **Car**: prędkość względem ziemi i prędkość kół z auta.
@@ -193,19 +194,45 @@ Skąd bierze się kąt:
 
 W symulacji z idealnymi czujnikami błąd kąta jest poniżej stopnia, z zaszumionymi średnio 1,5 stopnia i chwilowo do kilku stopni. Na prawdziwym aucie nie było to jeszcze mierzone. To nie zastąpi urządzenia z dwiema antenami RTK: jazda tyłem, długie obracanie w miejscu bez prostych i luźny uchwyt telefonu dają błędne wskazania.
 
-Mapa pobiera kafelki z serwera OpenStreetMap, więc otwarty widok Drift wysyła tam przybliżone położenie (numer kafelka). Sam ślad i dane nie są nigdzie wysyłane. Bez internetu mapa jest pusta, a ślad i auto są rysowane na siatce. Przyciski **+** i **-** zmieniają powiększenie.
+Przyciski **+** i **-** zmieniają powiększenie, a trzeci przycisk przełącza podkład:
 
-Tryb **Demo** pokazuje ten widok na wymyślonym przejeździe po ósemce (na starym pasie lotniska Tempelhof w Berlinie).
+- **Map**: mapa OpenStreetMap, cały świat.
+- **Sat**: zdjęcia lotnicze, czyli ortofotomapa z Geoportalu (GUGiK). Tylko Polska; na torze widać pojedyncze auta. Dane są otwarte: Geoportal podaje, że ortofotomapa jest bezpłatna i "możliwa do dowolnego wykorzystania". Poza Polską w miejscu zdjęć pokazuje się zwykła mapa, z dopiskiem na dole. Obiekty wojskowe (na przykład lotnisko Bemowo) są na zdjęciach celowo zamazane.
+
+Zdjęć satelitarnych całego świata (na przykład Esri World Imagery) nie ma w aplikacji celowo: pasują do tej samej siatki kafelków i technicznie działają, ale według Esri korzystanie z nich wymaga konta ArcGIS. Gdy będzie konto i klucz, wystarczy dopisać warstwę w `src/map.js`.
+
+Mapa pobiera kafelki z serwera OpenStreetMap albo Geoportalu, więc otwarty widok Drift lub Replay wysyła tam przybliżone położenie (numer kafelka). Sam ślad i dane nie są nigdzie wysyłane. Bez internetu mapa jest pusta, a ślad i auto są rysowane na siatce. Wybrany podkład i powiększenie są wspólne dla widoków Drift i Replay i zostają w telefonie.
+
+Tryb **Demo** pokazuje ten widok na wymyślonym przejeździe po ósemce, na skrzyżowaniu dróg kołowania dawnego lotniska w Ułężu (Moto Park Ułęż), żeby pod Demo były też zdjęcia lotnicze.
 
 To, co widok pokazywał, zapisuje się dziesięć razy na sekundę w pliku `phone_drift` (kierunek nadwozia, kurs, kąt driftu, prędkość obrotu, prędkość, pozycja i stan kalibracji), żeby dało się to sprawdzić po przejeździe.
 
+## Widok Replay
+
+Trzecia zakładka, **Replay**, odtwarza zapisany przejazd:
+
+- **Replay the log in this app** bierze log, który aplikacja ma w pamięci (to samo, co zapisałby **Save**), także w trakcie trwającego zapisu.
+- **Open files…** wczytuje pliki zapisane albo udostępnione z aplikacji: archiwum `drifthing_log_*.zip` albo pojedyncze pliki CSV (można zaznaczyć kilka naraz). Strumień jest rozpoznawany po nazwie pliku (`obd_data`, `phone_gps` i tak dalej), także gdy telefon dopisał do nazwy "(1)"; plik z kolumną `rpm` jest zawsze danymi auta.
+
+Co widać:
+
+- **Mapa** z całym śladem i autem w miejscu odtwarzania, obróconym jak nadwozie, ze strzałką kierunku jazdy. Pozycja pochodzi z `phone_drift`, a gdy go nie ma, z `phone_gps`. Log bez pozycji (same dane auta) odtwarza się bez mapy.
+- **Odczyty**: kąt driftu, prędkość z GPS, prędkość i obroty z auta w chwili odtwarzania.
+- **Play / Pause**, tempo od ×0,25 do ×16 i suwak pozycji. Przerwy w zapisie (strona w tle, postój z rozłączonym adapterem; ponad 3 sekundy bez żadnych danych) są przeskakiwane, a ich liczba jest podana pod przyciskami.
+- **Wykresy**: każdy sygnał ma własny pasek z własną skalą (najmniejsza i największa wartość w całym nagraniu), a wszystkie paski mają wspólną oś czasu i wspólny kursor. Sygnał dodaje się z listy **Add a signal to the charts…** (wszystkie kolumny wszystkich plików, pogrupowane według źródła), a usuwa krzyżykiem. Wybór zostaje w telefonie. Dotknięcie wykresu przenosi odtwarzanie w to miejsce.
+- **Charts show** ustawia, ile czasu widać na wykresach naraz: 10 s, 30 s, 2 min, 10 min albo całe nagranie. Wykres stoi w miejscu, przesuwa się kursor; gdy dojdzie do końca okna, wykresy przechodzą do następnego. W miejscu przerwy w zapisie linia jest przerwana.
+
+Wszystkie sygnały leżą na jednej osi czasu, bo każdy plik ma `timestamp_ms` z tego samego zegara zapisu. Wartość pokazywana w danej chwili to ostatnia zmierzona przed tą chwilą. Długie sygnały (60 Hz) są na wykresie przerzedzane tak, żeby każdy szczyt i dołek został.
+
+Odtwarzanie działa w całości w telefonie, bez internetu (poza kafelkami mapy). Archiwum z godziny jazdy to kilkadziesiąt megabajtów danych w pamięci, więc bardzo długie logi lepiej oglądać na laptopie.
+
 ## Dane
 
-Kolumny CSV: `timestamp_ms, rpm, speed_kmh, throttle_pct, pedal_pct, engine_load_pct, coolant_c, intake_air_c, maf_gs, map_kpa, oil_c, ambient_c, catalyst_c, battery_v`. Pierwsze dziesięć jest takie samo jak w loggerze na Raspberry. Ostatnia to napięcie akumulatora mierzone przez adapter. Pusta komórka oznacza, że auto nie obsługuje danej wartości albo nie była czytana w tym cyklu (wartości silnika i temperatury są czytane kolejno, jedna na sekundę).
+Kolumny CSV: `timestamp_ms, rpm, speed_kmh, throttle_pct, pedal_pct, engine_load_pct, coolant_c, intake_air_c, maf_gs, map_kpa, oil_c, ambient_c, catalyst_c, battery_v`. Pierwsze dziesięć jest takie samo jak w loggerze na Raspberry. Ostatnia to napięcie akumulatora mierzone przez adapter. Pusta komórka oznacza, że auto nie obsługuje danej wartości albo nie była czytana w tym wierszu: na linii K wiersz to jedna wartość, na CAN cały cykl, w którym wolne wartości (obciążenie, temperatury) są czytane kolejno, jedna na sekundę. Do analizy w arkuszu albo w pandas puste komórki wypełnia się ostatnią znaną wartością (`ffill`).
 
 Temperatury oleju (`oil_c`), powietrza na zewnątrz (`ambient_c`) i katalizatora (`catalyst_c`) są w standardzie OBD2, ale zgłaszają je głównie nowsze auta. Kafelek na ekranie pojawia się tylko wtedy, gdy auto daną wartość ma.
 
-`timestamp_ms` to zegar telefonu w środku zapytania. Telefon synchronizuje zegar z siecią, więc dane da się zestawić z GNSS z urządzenia.
+`timestamp_ms` to czas ze środka zapytania, na zegarze zapisu opisanym w rozdziale o czujnikach telefonu. Telefon synchronizuje zegar z siecią, więc dane da się zestawić z GNSS z urządzenia.
 
 Aplikacja pyta auto, które wartości obsługuje, i czyta tylko te. Pełna lista wartości zgłoszonych przez auto (także tych, których aplikacja nie czyta) jest w dzienniku diagnostycznym, w wierszu "the car reports N mode 01 PIDs". Listy zgłoszone przez różne sterowniki (silnik, skrzynia) są łączone. Na CAN szybkie dane idą jednym zapytaniem, o ile auto na to pozwala; na linii K zawsze po jednej wartości.
 
@@ -214,6 +241,7 @@ Aplikacja pyta auto, które wartości obsługuje, i czyta tylko te. Pełna lista
 - Odczyt z auta przeszedł pierwszy test (10.11.2026: BMW E39, adapter Vgate Scan, telefon z Androidem). Zapis czujników telefonu był sprawdzany tylko w Chrome na komputerze, z podstawionymi czujnikami i GPS; na prawdziwym telefonie jeszcze nie.
 - Dane nie są nigdzie wysyłane. Żeby trafiały do projektu, trzeba je dopiąć do brokera MQTT (przeglądarka potrzebuje do tego MQTT po WebSocket) albo wgrywać CSV.
 - Widok Drift i wyliczanie kąta driftu były sprawdzane tylko na symulowanym przejeździe, w testach i w Chrome na komputerze.
+- Widok Replay był sprawdzany w Chrome na komputerze: na logu z pierwszej jazdy E39 (same dane auta) i na symulowanym przejeździe z czujnikami, GPS i pauzą. Na telefonie i na prawdziwym zapisie czujników jeszcze nie.
 - Ocena akumulatora była sprawdzana na symulowanym rozruchu. Na aucie widać było dotąd tylko to, że adapter podaje napięcie (13,9 V przy pracującym silniku).
 - Hamulec i kąt skrętu kierownicy nie są standardowymi wartościami OBD2. Wymagają czytania surowych ramek konkretnego modelu auta, a w E39 protokołu BMW.
 
@@ -223,7 +251,7 @@ Aplikacja pyta auto, które wartości obsługuje, i czyta tylko te. Pełna lista
 npm test
 ```
 
-Testy (Node 22, bez zależności) sprawdzają dekodowanie wartości, parsowanie odpowiedzi adaptera, sesję na symulatorze (CAN, linia K, klon odrzucający komendy, auto bez odpowiedzi, zawieszone szukanie protokołu), pętlę odczytu z ponownym łączeniem, dziennik diagnostyczny, transport Web Serial na podstawionym porcie, eksport CSV, listę plików do pracy bez serwera, service worker na podstawionym serwerze (start bez sieci, pobranie nowej wersji, wolny serwer), wybór portu adaptera, zapis czujników telefonu na podstawionych czujnikach i GPS, format próbek, archiwum ZIP (odczytywane niezależnym kodem), arytmetykę mapy, kąt driftu na symulowanych przejazdach (dowolne mocowanie telefonu, opóźniony GPS, szum czujników, przerwa w danych) oraz ocenę akumulatora (tabele napięć, rozruch, ładowanie).
+Testy (Node 22, bez zależności) sprawdzają dekodowanie wartości, parsowanie odpowiedzi adaptera, sesję na symulatorze (CAN, linia K, klon odrzucający komendy, auto bez odpowiedzi, zawieszone szukanie protokołu), pętlę odczytu z ponownym łączeniem, dziennik diagnostyczny, transport Web Serial na podstawionym porcie, eksport CSV, listę plików do pracy bez serwera, service worker na podstawionym serwerze (start bez sieci, pobranie nowej wersji, wolny serwer), wybór portu adaptera, zapis czujników telefonu na podstawionych czujnikach i GPS, format próbek, archiwum ZIP (odczytywane niezależnym kodem), arytmetykę mapy, kąt driftu na symulowanych przejazdach (dowolne mocowanie telefonu, opóźniony GPS, szum czujników, przerwa w danych), ocenę akumulatora (tabele napięć, rozruch, ładowanie), zegar zapisu (skok zegara telefonu, uśpienie), odczyt archiwum ZIP, wczytanie nagrania do odtwarzania (CSV, rzadkie wiersze z linii K, przerwy, przerzedzanie, interpolacja pozycji), drogę loga od zapisu do odtworzenia oraz arytmetykę wykresów.
 
 ## Pliki
 
@@ -233,7 +261,9 @@ Testy (Node 22, bez zależności) sprawdzają dekodowanie wartości, parsowanie 
 - `src/battery.js`: naładowanie akumulatora z napięcia i ocena ładowania.
 - `src/sensors.js`: czujniki ruchu i GPS telefonu. `src/samples.js`: ich próbki i zapis do CSV.
 - `src/drift.js`: kierunek nadwozia, kurs i kąt driftu. `src/geo.js`, `src/map.js`: mapa. `src/demo-drive.js`: przejazd dla trybu Demo.
-- `src/app.js`, `index.html`, `styles.css`: ekran. `src/storage.js`, `src/csv.js`, `src/zip.js`: log i eksport.
+- `src/replay.js`: nagranie wczytane do odtwarzania (sygnały na wspólnej osi czasu). `src/replay-view.js`: widok Replay. `src/chart.js`: wykres jednego sygnału.
+- `src/clock.js`: zegar zapisu, wspólny dla danych auta i telefonu.
+- `src/app.js`, `index.html`, `styles.css`: ekran. `src/storage.js`, `src/csv.js`, `src/zip.js`: log, eksport i odczyt archiwum.
 - `sw.js`, `manifest.webmanifest`: praca bez serwera, pobieranie nowej wersji i ikona na ekranie głównym. Nowy plik aplikacji trzeba dopisać do listy w `sw.js` (pilnuje tego test).
 - `.nojekyll`: GitHub Pages ma podawać pliki bez przetwarzania.
 - `tools/make_icons.py`: generuje ikony PNG (wymaga Pillow).

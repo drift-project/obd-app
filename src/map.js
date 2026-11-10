@@ -1,14 +1,55 @@
-// The map of the drift view: OpenStreetMap tiles under the driven line and a
-// car that points the way the body points. North is up and the car stays in
-// the middle. Without a connection the tiles stay empty and the line and the
-// car are drawn on the plain background.
+// The map of the drift and replay views: map or aerial tiles under the driven
+// line and a car that points the way the body points. North is up and the car
+// stays in the middle. Without a connection the tiles stay empty and the line
+// and the car are drawn on the plain background.
 
 import { TILE_SIZE, project, tilesInView } from './geo.js';
 
-const tileUrl = (zoom, x, y) => `https://tile.openstreetmap.org/${zoom}/${x}/${y}.png`;
-
 export const MIN_ZOOM = 12;
-export const MAX_ZOOM = 19; // the deepest level the tile server has
+export const MAX_ZOOM = 19; // the deepest level every layer has
+
+const GEOPORTAL = 'https://mapy.geoportal.gov.pl/wss/service/PZGIK/ORTO/WMTS/StandardResolution';
+
+/**
+ * What can be shown under the line. Both use the same tile grid.
+ *
+ * Pictures of the whole world (Esri World Imagery, for one) fit the same
+ * grid, but their terms ask for an account with the provider, so they are
+ * not built in.
+ */
+export const LAYERS = [
+  {
+    id: 'map',
+    label: 'Map',
+    credit: '© OpenStreetMap',
+    url: (zoom, x, y) => `https://tile.openstreetmap.org/${zoom}/${x}/${y}.png`,
+  },
+  {
+    // Pictures from the air: the Polish state orthophoto. Open data, free for any use, Poland only.
+    id: 'orthophoto',
+    label: 'Sat',
+    credit: '© GUGiK, geoportal.gov.pl',
+    url: (zoom, x, y) =>
+      `${GEOPORTAL}?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=ORTOFOTOMAPA&STYLE=default&FORMAT=image/jpeg` +
+      `&TILEMATRIXSET=EPSG:3857&TILEMATRIX=EPSG:3857:${zoom}&TILEROW=${y}&TILECOL=${x}`,
+  },
+];
+
+const SVG = 'http://www.w3.org/2000/svg';
+
+function svg(name, attributes = {}, children = []) {
+  const element = document.createElementNS(SVG, name);
+  for (const [key, value] of Object.entries(attributes)) element.setAttribute(key, value);
+  element.append(...children);
+  return element;
+}
+
+function html(name, className, text = '') {
+  const element = document.createElement(name);
+  element.className = className;
+  element.textContent = text;
+  return element;
+}
 
 export class TrackMap {
   #view;
@@ -17,38 +58,92 @@ export class TrackMap {
   #car;
   #body;
   #course;
+  #hint;
+  #credit;
+  #layerButton;
   #zoom;
-  #images = new Map(); // "zoom/x/y" -> img
+  #layer;
+  #onChange;
+  #images = new Map(); // "layer/zoom/x/y" -> img
+  #borrowed = new Set(); // keys of the tiles that show the drawn map because their layer has no picture there
   #drawn = { points: null, length: -1, zoom: -1, anchor: null };
 
   /**
-   * `elements`: the view (sized box), the tile layer, the SVG polyline of the
-   * driven line, the car group and inside it the body and the course arrow.
+   * Builds the map inside `view`, an empty box with a size. `zoom` and
+   * `layer` are where it starts; `onChange({ zoom, layer })` is called when
+   * the buttons on the map change them.
    */
-  constructor({ view, tiles, path, car, body, course }, zoom = 18) {
+  constructor(view, { zoom = 18, layer = 'map', onChange = () => {} } = {}) {
     this.#view = view;
-    this.#tiles = tiles;
-    this.#path = path;
-    this.#car = car;
-    this.#body = body;
-    this.#course = course;
     this.#zoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Math.round(zoom) || 18));
+    this.#layer = LAYERS.find(({ id }) => id === layer) ?? LAYERS[0];
+    this.#onChange = onChange;
+
+    this.#tiles = html('div', 'map-tiles');
+    this.#path = svg('polyline', { class: 'map-path', points: '', hidden: '' });
+    this.#course = svg('g', { class: 'map-course', hidden: '' }, [svg('line', { x1: 0, y1: 0, x2: 0, y2: -52 }), svg('path', { d: 'M -6 -50 L 0 -62 L 6 -50 Z' })]);
+    this.#body = svg('g', { class: 'map-body', hidden: '' }, [
+      svg('rect', { x: -9, y: -19, width: 18, height: 38, rx: 6 }),
+      svg('path', { class: 'map-glass', d: 'M -6 -10 L 6 -10 L 5 -3 L -5 -3 Z' }),
+      svg('path', { class: 'map-glass', d: 'M -5 8 L 5 8 L 6 13 L -6 13 Z' }),
+    ]);
+    this.#car = svg('g', { hidden: '' }, [this.#course, this.#body]);
+    const overlay = svg('svg', { class: 'map-overlay', 'aria-hidden': 'true' }, [this.#path, this.#car]);
+
+    const button = (label, name, action) => {
+      const element = html('button', '', label);
+      element.type = 'button';
+      element.setAttribute('aria-label', name);
+      element.addEventListener('click', action);
+      return element;
+    };
+    // Shows the layer that is on; a tap goes to the next one.
+    this.#layerButton = button(this.#layer.label, 'Change the map layer: map or pictures from the air', () => this.#nextLayer());
+    this.#layerButton.className = 'map-layer';
+    const controls = html('div', 'map-zoom');
+    controls.append(button('+', 'Zoom in', () => this.#zoomBy(1)), button('-', 'Zoom out', () => this.#zoomBy(-1)), this.#layerButton);
+    this.#hint = html('p', 'map-hint');
+    this.#credit = html('p', 'map-credit', this.#layer.credit);
+    view.replaceChildren(this.#tiles, overlay, controls, this.#hint, this.#credit);
+    this.#tiles.dataset.layer = this.#layer.id;
   }
 
   get zoom() {
     return this.#zoom;
   }
 
-  /** Zoom in (+1) or out (-1); returns the new level. */
-  zoomBy(step) {
-    this.#zoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, this.#zoom + step));
-    return this.#zoom;
+  get layer() {
+    return this.#layer.id;
+  }
+
+  /** Text shown in the middle of the map, such as "Waiting for a GPS position". */
+  set hint(text) {
+    if (this.#hint.textContent !== text) this.#hint.textContent = text;
+  }
+
+  /** Set the zoom and the layer from outside, for example to follow another map; `onChange` is not called. */
+  show({ zoom = this.#zoom, layer = this.#layer.id } = {}) {
+    this.#zoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Math.round(zoom) || this.#zoom));
+    this.#layer = LAYERS.find(({ id }) => id === layer) ?? this.#layer;
+    this.#layerButton.textContent = this.#layer.label;
+    this.#credit.textContent = this.#layer.credit;
+    this.#tiles.dataset.layer = this.#layer.id;
+  }
+
+  #zoomBy(step) {
+    this.show({ zoom: this.#zoom + step });
+    this.#onChange({ zoom: this.#zoom, layer: this.#layer.id });
+  }
+
+  #nextLayer() {
+    this.show({ layer: LAYERS[(LAYERS.indexOf(this.#layer) + 1) % LAYERS.length].id });
+    this.#onChange({ zoom: this.#zoom, layer: this.#layer.id });
   }
 
   #drawTiles(center, width, height) {
     const wanted = new Set();
     for (const tile of tilesInView(center, width, height, this.#zoom)) {
-      const key = `${this.#zoom}/${tile.x}/${tile.y}`;
+      const key = `${this.#layer.id}/${this.#zoom}/${tile.x}/${tile.y}`;
       wanted.add(key);
       let image = this.#images.get(key);
       if (!image) {
@@ -58,11 +153,22 @@ export class TrackMap {
         image.decoding = 'async';
         image.width = TILE_SIZE;
         image.height = TILE_SIZE;
-        // No connection or no such tile: leave the background showing.
+        const drawn = LAYERS[0];
+        // The drawn map is toned down to sit in the dark screen; a picture is shown as it is.
+        image.classList.toggle('map-drawn', this.#layer === drawn);
+        // Where this layer has no picture (the pictures from the air end at the Polish border), the
+        // drawn map is shown in its place. Without a connection that fails too and the background stays.
+        const instead = this.#layer === drawn ? null : drawn.url(this.#zoom, tile.x, tile.y);
         image.addEventListener('error', () => {
-          image.style.visibility = 'hidden';
+          if (instead && !this.#borrowed.has(key) && this.#images.get(key) === image) {
+            this.#borrowed.add(key);
+            image.classList.add('map-drawn');
+            image.src = instead;
+          } else {
+            image.style.visibility = 'hidden';
+          }
         });
-        image.src = tileUrl(this.#zoom, tile.x, tile.y);
+        image.src = this.#layer.url(this.#zoom, tile.x, tile.y);
         this.#images.set(key, image);
         this.#tiles.append(image);
       }
@@ -72,7 +178,11 @@ export class TrackMap {
       if (wanted.has(key)) continue;
       image.remove();
       this.#images.delete(key);
+      this.#borrowed.delete(key);
     }
+    // Whoever made what is on screen is named: the layer, or the map that stands in for it.
+    const credit = this.#borrowed.size ? `No pictures from the air here · ${LAYERS[0].credit}` : this.#layer.credit;
+    if (this.#credit.textContent !== credit) this.#credit.textContent = credit;
   }
 
   /**
@@ -102,7 +212,7 @@ export class TrackMap {
 
   /**
    * Draw the map around `position` ({ latitude, longitude }, or null when it
-   * is not known yet). `points` are the fixes driven so far as [latitude,
+   * is not known yet). `points` are the places driven so far as [latitude,
    * longitude]; `heading` and `course` are degrees clockwise from north or
    * null. Without a heading the car is turned along the course.
    */

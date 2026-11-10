@@ -25,6 +25,7 @@
   <nav class="views" aria-label="View">
     <button id="view-car" class="view" type="button" aria-pressed="true">Car</button>
     <button id="view-drift" class="view" type="button" aria-pressed="false">Drift</button>
+    <button id="view-replay" class="view" type="button" aria-pressed="false">Replay</button>
   </nav>
 
   <main>
@@ -32,29 +33,7 @@
     <p id="progress" class="progress" aria-live="polite" hidden></p>
 
     <section id="drift" class="drift" aria-label="Drift view" hidden>
-      <div id="map" class="map">
-        <div id="map-tiles" class="map-tiles"></div>
-        <svg class="map-overlay" aria-hidden="true">
-          <polyline id="map-path" class="map-path" points="" hidden/>
-          <g id="map-car" hidden>
-            <g id="map-course" class="map-course" hidden>
-              <line x1="0" y1="0" x2="0" y2="-52"/>
-              <path d="M -6 -50 L 0 -62 L 6 -50 Z"/>
-            </g>
-            <g id="map-body" class="map-body" hidden>
-              <rect x="-9" y="-19" width="18" height="38" rx="6"/>
-              <path class="map-glass" d="M -6 -10 L 6 -10 L 5 -3 L -5 -3 Z"/>
-              <path class="map-glass" d="M -5 8 L 5 8 L 6 13 L -6 13 Z"/>
-            </g>
-          </g>
-        </svg>
-        <div class="map-zoom">
-          <button id="zoom-in" type="button" aria-label="Zoom in">+</button>
-          <button id="zoom-out" type="button" aria-label="Zoom out">-</button>
-        </div>
-        <p id="map-hint" class="map-hint"></p>
-        <p class="map-credit">© OpenStreetMap</p>
-      </div>
+      <div id="map" class="map"></div>
 
       <dl class="drift-readouts">
         <div class="drift-angle"><dt>Drift angle</dt><dd><span id="drift-angle">--</span><small id="drift-side">°</small></dd></div>
@@ -63,6 +42,38 @@
         <div><dt>Turn</dt><dd><span id="drift-turn">--</span><small>°/s</small></dd></div>
       </dl>
       <p id="drift-note" class="drift-note"></p>
+    </section>
+
+    <section id="replay" class="replay" aria-label="Replay of a recording" hidden>
+      <div class="replay-source">
+        <button id="replay-log" class="button" type="button">Replay the log in this app</button>
+        <button id="replay-open" class="button" type="button">Open files…</button>
+        <input id="replay-files" type="file" accept=".csv,.zip,text/csv,application/zip" multiple hidden>
+      </div>
+      <p id="replay-info" class="replay-info">Plays back a recording: the log kept in this app, or the CSV and ZIP files saved or shared from it.</p>
+
+      <div id="replay-body" class="replay-body" hidden>
+        <div id="replay-map" class="map replay-map"></div>
+
+        <dl class="drift-readouts">
+          <div class="drift-angle"><dt>Drift angle</dt><dd><span id="replay-angle">--</span><small id="replay-side">°</small></dd></div>
+          <div><dt>GPS</dt><dd><span id="replay-gps">--</span><small>km/h</small></dd></div>
+          <div><dt>Car</dt><dd><span id="replay-car">--</span><small>km/h</small></dd></div>
+          <div><dt>Engine</dt><dd><span id="replay-rpm">--</span><small>rpm</small></dd></div>
+        </dl>
+
+        <div class="replay-transport">
+          <button id="replay-play" class="button primary" type="button">Play</button>
+          <label>Speed <select id="replay-speed"></select></label>
+          <label>Charts show <select id="replay-window"></select></label>
+        </div>
+        <input id="replay-seek" class="replay-seek" type="range" min="0" max="1000" step="1" value="0" aria-label="Position in the recording">
+        <p id="replay-clock" class="replay-clock"></p>
+
+        <div id="replay-charts" class="charts"></div>
+        <p id="replay-range" class="replay-range"></p>
+        <select id="replay-add" class="replay-add" aria-label="Add a signal to the charts"></select>
+      </div>
     </section>
 
     <section class="dash" aria-label="Live car data">

@@ -398,16 +398,26 @@ small {
   height: 100%;
 }
 
-.map-tiles {
+/* The drawn map is toned down to sit in the dark screen; pictures from the air are shown as they are. */
+.map-tiles img.map-drawn {
   filter: brightness(0.82) saturate(0.85);
 }
 
+/* On a picture the line needs a dark edge to stand out. */
+.map-tiles:not([data-layer='map']) ~ .map-overlay .map-path {
+  stroke: var(--blue);
+  filter: drop-shadow(0 0 1.5px rgb(0 0 0 / 0.9));
+}
+
+/* One pixel larger than their place in the grid, so each tile reaches under
+   its neighbours: on a screen with a fractional pixel ratio a hairline of the
+   background would otherwise show between two tiles. */
 .map-tiles img {
   position: absolute;
   top: 0;
   left: 0;
-  width: 256px;
-  height: 256px;
+  width: 257px;
+  height: 257px;
   max-width: none;
   user-select: none;
 }
@@ -463,6 +473,13 @@ small {
   color: var(--text);
   font: 600 1.375rem/1 system-ui, sans-serif;
   cursor: pointer;
+}
+
+/* Names the layer that is on: the map or the pictures from the air. */
+.map-zoom .map-layer {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
 }
 
 .map-hint {
@@ -540,6 +557,194 @@ small {
 
 .drift-note:empty {
   display: none;
+}
+
+/* Replay view ------------------------------------------------------------- */
+
+.replay,
+.replay-body {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.replay-source {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.replay-info,
+.replay-clock,
+.replay-range {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.replay-map {
+  height: min(40dvh, 420px);
+}
+
+.replay-transport {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 10px;
+}
+
+.replay-transport .button {
+  flex: 1 1 7rem;
+}
+
+.replay-transport label {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.replay select {
+  min-height: 48px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+}
+
+.replay select:disabled {
+  opacity: 0.4;
+}
+
+.replay-seek {
+  width: 100%;
+  height: 32px;
+  margin: 0;
+  accent-color: var(--blue);
+}
+
+.replay-clock {
+  color: var(--text);
+  text-align: center;
+}
+
+.replay-range {
+  font-size: 0.75rem;
+  text-align: center;
+}
+
+.replay-range:empty {
+  display: none;
+}
+
+.replay-add {
+  width: 100%;
+}
+
+/* One strip per signal, all over the same stretch of time. */
+.charts {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.chart {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+}
+
+.chart-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 2px 0 12px;
+}
+
+.chart-name {
+  font-size: 0.875rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.chart-source {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.75rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chart-value {
+  color: var(--blue);
+  font: italic 800 1.125rem/1 var(--display);
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-remove {
+  width: 40px;
+  height: 36px;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: 400 1.375rem/1 system-ui, sans-serif;
+  cursor: pointer;
+}
+
+.chart-body {
+  position: relative;
+  height: 88px;
+}
+
+/* The picture is stretched to the strip, so the strokes are kept at their own width. */
+.chart-plot {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: pointer;
+}
+
+.chart-line {
+  fill: none;
+  stroke: var(--blue);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.chart-cursor {
+  stroke: var(--amber);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+/* The highest and the lowest value of the signal, at the top and the bottom of the strip. */
+.chart-scale {
+  position: absolute;
+  inset: 2px 6px 2px auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 0.625rem;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+/* Readable where the line runs behind them. */
+.chart-scale span:not(:empty) {
+  padding: 0 4px;
+  border-radius: 4px;
+  background: rgb(14 21 28 / 0.8);
 }
 
 /* Controls ---------------------------------------------------------------- */

@@ -3,8 +3,10 @@
 
 const RADIANS = Math.PI / 180;
 
-// The old runway of Tempelhof in Berlin: a wide stretch of tarmac that is a public park now.
-export const DEMO_START = { latitude: 52.4737, longitude: 13.4017 };
+// Where the two loops of the eight cross: a junction of the old taxiways at Moto Park Ułęż, a former
+// airfield in Poland where drift events are held. The run-in comes up the taxiway from the south-west.
+// It lies in Poland so that the pictures from the air, which cover only Poland, show under the demo.
+export const DEMO_START = { latitude: 51.61758, longitude: 22.0999 };
 
 const SIZE_M = 30; // half the length of the eight
 const PACE = 0.35; // radians of the eight per second

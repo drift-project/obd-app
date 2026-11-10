@@ -1,4 +1,5 @@
-// A small ZIP writer, so a whole recording can be saved as one file.
+// A small ZIP writer and reader, so a whole recording can be saved as one
+// file and opened again for replay.
 //
 // Entries are deflated with the browser's CompressionStream where it exists
 // (CSV shrinks to about a quarter) and stored as they are otherwise. Sizes and
@@ -31,6 +32,50 @@ function header(size, fill) {
   const bytes = new Uint8Array(size);
   fill(new DataView(bytes.buffer));
   return bytes;
+}
+
+async function inflate(bytes) {
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+const decoder = new TextDecoder();
+
+/**
+ * The files of a ZIP archive as `[{ name, bytes }]`. Stored and deflated
+ * entries are read, which is what every common tool writes; others are left
+ * out. Throws when the data is not a ZIP archive.
+ */
+export async function unzip(blob) {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  // The directory is found from the end, where a comment of up to 64 KiB may follow it.
+  let end = -1;
+  for (let at = bytes.length - 22; at >= 0 && at >= bytes.length - 22 - 65535; at -= 1) {
+    if (view.getUint32(at, true) === 0x06054b50) {
+      end = at;
+      break;
+    }
+  }
+  if (end < 0) throw new Error('not a ZIP file');
+  const count = view.getUint16(end + 10, true);
+  let at = view.getUint32(end + 16, true);
+  const files = [];
+  for (let entry = 0; entry < count; entry += 1) {
+    if (at + 46 > bytes.length || view.getUint32(at, true) !== 0x02014b50) throw new Error('damaged ZIP file');
+    const method = view.getUint16(at + 10, true);
+    const packedSize = view.getUint32(at + 20, true);
+    const nameLength = view.getUint16(at + 28, true);
+    const local = view.getUint32(at + 42, true);
+    const name = decoder.decode(bytes.subarray(at + 46, at + 46 + nameLength));
+    // The local header has its own lengths for the name and the extra field.
+    const start = local + 30 + view.getUint16(local + 26, true) + view.getUint16(local + 28, true);
+    const packed = bytes.subarray(start, start + packedSize);
+    if (method === 0) files.push({ name, bytes: packed });
+    else if (method === 8) files.push({ name, bytes: await inflate(packed) });
+    at += 46 + nameLength + view.getUint16(at + 30, true) + view.getUint16(at + 32, true);
+  }
+  return files;
 }
 
 /** Local time in the two 16-bit fields of the MS-DOS format, good to two seconds. */

@@ -22,9 +22,16 @@ async function makePoller({ simulator = new ELM327Simulator(), clock = fakeClock
 
 const column = (row, pid) => row[FIELDS.indexOf(PIDS.get(pid).name)];
 
+/** The single row of a cycle on a car that answers several PIDs at once. */
+async function pollRow(poller) {
+  const rows = await poller.poll();
+  assert.equal(rows.length, 1);
+  return rows[0];
+}
+
 test('row has a timestamp and all fast values', async () => {
   const clock = fakeClock();
-  const row = await (await makePoller({ clock })).poll();
+  const row = await pollRow(await makePoller({ clock }));
   assert.equal(row.length, FIELDS.length);
   assert.equal(row[0], clock.now);
   assert.ok(FAST_PIDS.every((pid) => column(row, pid) !== null));
@@ -33,15 +40,15 @@ test('row has a timestamp and all fast values', async () => {
 test('slow PIDs are read one per interval in turn', async () => {
   const clock = fakeClock();
   const poller = await makePoller({ clock });
-  const first = await poller.poll();
+  const first = await pollRow(poller);
   assert.notEqual(column(first, SLOW_PIDS[0]), null);
   assert.equal(column(first, SLOW_PIDS[1]), null);
 
-  const sameSecond = await poller.poll();
+  const sameSecond = await pollRow(poller);
   assert.ok(SLOW_PIDS.every((pid) => column(sameSecond, pid) === null));
 
   clock.now += SLOW_INTERVAL_MS;
-  const later = await poller.poll();
+  const later = await pollRow(poller);
   assert.notEqual(column(later, SLOW_PIDS[1]), null);
 });
 
@@ -147,12 +154,13 @@ test('run records the session and goes quiet once polling is steady', async () =
   const trace = new Trace();
   const controller = new AbortController();
   const total = QUIET_AFTER_POLLS + 15;
-  let rows = 0;
+  let cycles = 0;
   await run(() => quickElm(new LoopbackTransport(new ELM327Simulator({ busProtocol: '3' }))), {
     signal: controller.signal,
-    sink: () => {
-      rows += 1;
-      if (rows === total) controller.abort();
+    sink: (row) => {
+      // On a K-line every value is a row; the engine speed comes once a cycle.
+      if (column(row, 0x0c) !== null) cycles += 1;
+      if (cycles === total) controller.abort();
     },
     trace,
   });
@@ -167,7 +175,8 @@ test('run records the session and goes quiet once polling is steady', async () =
   assert.ok(steady > 0);
   // The first polls are logged in full, later ones are not.
   assert.ok(lines.slice(0, steady).filter((line) => line.startsWith('> 010C')).length === QUIET_AFTER_POLLS);
-  assert.deepEqual(lines.slice(steady + 1), [`# stopped after ${total} rows and 0 problems`]);
+  assert.equal(lines.length, steady + 2);
+  assert.match(lines.at(-1), /^# stopped after \d+ rows and 0 problems$/);
 });
 
 test('a link lost during steady polling is logged with the exchanges before it', async () => {
@@ -246,7 +255,7 @@ test('with the engine off the battery voltage is read on every row', async () =>
   const before = voltageRequests(simulator);
   const rows = [];
   for (let i = 0; i < 4; i += 1) {
-    rows.push(await poller.poll());
+    rows.push(await pollRow(poller));
     clock.now += 800;
   }
   assert.deepEqual(rows.map(voltage), [12.4, 12.4, 12.4, 12.4]);
@@ -260,7 +269,7 @@ test('with the engine running the battery voltage is read every few seconds', as
   const poller = await makePoller({ simulator, clock });
   const rows = [];
   for (let i = 0; i < 12; i += 1) {
-    rows.push(await poller.poll());
+    rows.push(await pollRow(poller));
     clock.now += 1000;
   }
   // The first row and then one every five seconds.
@@ -280,7 +289,7 @@ test('an adapter that cannot tell its voltage is not asked for it again', async 
   const simulator = new ELM327Simulator({ rejected: ['RV'], rpm: 0 });
   const poller = await makePoller({ simulator });
   const before = voltageRequests(simulator);
-  const row = await poller.poll();
+  const row = await pollRow(poller);
   assert.equal(voltage(row), null);
   assert.equal(voltageRequests(simulator), before);
   assert.equal(poller.supportedFields().includes('battery_v'), false);
@@ -291,7 +300,69 @@ test('a voltage that makes no sense is left out', async () => {
   const simulator = new ELM327Simulator({ rpm: 0, voltage: () => reading });
   const poller = await makePoller({ simulator });
   reading = 0.3;
-  assert.equal(voltage(await poller.poll()), null);
+  assert.equal(voltage(await pollRow(poller)), null);
   reading = 12.3;
-  assert.equal(voltage(await poller.poll()), 12.3);
+  assert.equal(voltage(await pollRow(poller)), 12.3);
+});
+
+// --- Time of every value ---------------------------------------------------------------
+
+/** A clock that moves on by `step` ms every time it is read, as time passes while a request is on its way. */
+function tickingClock(step = 60) {
+  const clock = () => {
+    clock.now += step;
+    return clock.now;
+  };
+  clock.now = 1_700_000_000_000;
+  return clock;
+}
+
+test('on a K-line every value gets a row of its own, timed by its own request', async () => {
+  const simulator = new ELM327Simulator({ busProtocol: '3', supported: [0x04, 0x05, 0x0c, 0x0d, 0x11], rpm: 900, voltage: 14.0 });
+  const clock = tickingClock();
+  const poller = await makePoller({ simulator, clock });
+  const rows = await poller.poll();
+  // rpm, speed, throttle, one slow value and the voltage.
+  assert.equal(rows.length, 5);
+  const filled = rows.map((row) => FIELDS.filter((_, index) => index > 0 && row[index] !== null));
+  assert.deepEqual(filled, [['rpm'], ['speed_kmh'], ['throttle_pct'], ['engine_load_pct'], ['battery_v']]);
+  const times = rows.map((row) => row[0]);
+  assert.ok(times.every((time, index) => index === 0 || time > times[index - 1]), times.join(' '));
+  // Each time lies between the moments its own request was sent and answered.
+  assert.ok(times[0] > 1_700_000_000_000 && times.at(-1) < clock.now);
+  assert.equal(column(rows[0], 0x0c), 900);
+});
+
+test('on CAN a cycle stays one row with every fast value', async () => {
+  const poller = await makePoller({ simulator: new ELM327Simulator({ rpm: 900 }), clock: tickingClock() });
+  const rows = await poller.poll();
+  assert.equal(rows.length, 1);
+  assert.ok(FAST_PIDS.every((pid) => column(rows[0], pid) !== null));
+});
+
+test('a K-line car that says nothing gives no rows and is noticed', async () => {
+  const simulator = new ELM327Simulator({ busProtocol: '3', supported: [0x0c, 0x0d], noData: [0x0c, 0x0d], rejected: ['RV'] });
+  const poller = await makePoller({ simulator });
+  assert.deepEqual(await poller.poll(), []);
+  assert.equal(poller.emptyPolls, 1);
+});
+
+test('run hands every row of a cycle to the log', async () => {
+  const simulator = new ELM327Simulator({ busProtocol: '3', supported: [0x0c, 0x0d, 0x11], rpm: 900, rejected: ['RV'] });
+  const controller = new AbortController();
+  const rows = [];
+  const statuses = [];
+  await run(() => quickElm(new LoopbackTransport(simulator)), {
+    signal: controller.signal,
+    sink: (row) => {
+      rows.push(row);
+      if (rows.length === 6) controller.abort();
+    },
+    status: (info) => statuses.push(info),
+  });
+  assert.equal(rows.length, 6);
+  // Two cycles of three requests: rpm, speed, throttle, twice.
+  const filled = rows.map((row) => FIELDS.find((_, index) => index > 0 && row[index] !== null));
+  assert.deepEqual(filled, ['rpm', 'speed_kmh', 'throttle_pct', 'rpm', 'speed_kmh', 'throttle_pct']);
+  assert.equal(statuses.at(-1).rows, 6);
 });

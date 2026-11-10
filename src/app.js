@@ -2,6 +2,7 @@
 // with the motion sensors and the GPS of the phone recorded next to the car data.
 
 import { BatteryMonitor, chargePercent, chargingVerdict } from './battery.js';
+import { sessionClock } from './clock.js';
 import { fileName, toCsv } from './csv.js';
 import { DEMO_START, demoDrive, demoPhone } from './demo-drive.js';
 import { DRIFT_STREAM, DriftEstimator } from './drift.js';
@@ -10,6 +11,7 @@ import { offsetBy } from './geo.js';
 import { TrackMap } from './map.js';
 import { FIELDS } from './pids.js';
 import { pidList, run } from './poller.js';
+import { ReplayView } from './replay-view.js';
 import { SampleLog } from './samples.js';
 import { PhoneSensors, STREAMS } from './sensors.js';
 import { ELM327Simulator, LoopbackTransport } from './simulator.js';
@@ -18,7 +20,7 @@ import { Trace } from './trace.js';
 import { WebSerialTransport, pickPort } from './transports.js';
 import { zip } from './zip.js';
 
-const APP_VERSION = '0.5.0';
+const APP_VERSION = '0.6.0';
 const RPM_MAX = 8000;
 const REDLINE = 0.85;
 const FLUSH_MS = 1000; // a killed page loses at most about this much of the log
@@ -31,6 +33,8 @@ const ADAPTER_KEY = 'drifthing-obd-adapter-picked'; // '1' once an adapter was p
 const VIEW_KEY = 'drifthing-obd-view';
 const BATTERY_KEY = 'drifthing-obd-battery'; // capacity, type and voltmeter correction as JSON
 const ZOOM_KEY = 'drifthing-obd-map-zoom';
+const LAYER_KEY = 'drifthing-obd-map-layer'; // 'map' or 'orthophoto'
+const VIEWS = ['car', 'drift', 'replay'];
 const DRIFT_LOG_MS = 100; // the drift stream is written ten times a second
 
 // Everything recorded from the phone: its sensors and what the drift view worked out from them.
@@ -82,8 +86,9 @@ const state = {
   dirty: true,
   clearTimer: null,
   samples: new SampleLog(LOG_STREAMS), // phone samples; kept in IndexedDB until cleared
-  view: 'car', // 'car' | 'drift'
-  map: null,
+  view: 'car', // one of VIEWS
+  map: null, // the map of the drift view
+  replay: null, // the replay view
   drift: new DriftEstimator(), // of the running session, or of the last one
   attitudeFrom: null, // the orientation stream that feeds the drift estimator
   demoDrive: null, // timer of the made-up drive behind the Demo button
@@ -169,16 +174,6 @@ const STREAM_LABELS = {
 
 // Where each value sits in a position sample: [timestamp_ms, ...columns].
 const GPS = Object.fromEntries(STREAMS.find(({ name }) => name === 'gps').columns.map((column, index) => [column, index + 1]));
-
-/**
- * Epoch time that cannot jump in the middle of a session: the wall clock is
- * read once and the page's steady clock counts from there. Car rows and phone
- * samples share it, so they line up.
- */
-function sessionClock() {
-  const offset = Date.now() - performance.now();
-  return { now: () => offset + performance.now(), fromTicks: (ticks) => offset + ticks };
-}
 
 /** Speed of the car in m/s if it was read in the last few seconds, else null. */
 function wheelSpeed() {
@@ -638,7 +633,13 @@ function logInfo(stamp, rows) {
     '',
     'Files:',
   ];
-  if (rows) lines.push(`obd_data: ${rows} rows from the car over OBD2, one row per polling cycle.`);
+  if (rows) {
+    lines.push(
+      `obd_data: ${rows} rows from the car over OBD2. Where the car gives one value per request (K-line), every value`,
+      'is a row of its own with the time of its own request, and the other cells of that row are empty. Where it answers',
+      'several values at once (CAN), a row is one polling cycle. An empty cell: not read in that row.',
+    );
+  }
   for (const stream of LOG_STREAMS) {
     const samples = state.samples.count(stream.name);
     if (!samples) continue;
@@ -675,6 +676,28 @@ function logEntries(stamp) {
 }
 
 const asFile = ({ name, type, data }) => new File([data], name, { type });
+
+/** The log as it is now, as tables for the replay: the car's rows and every stream recorded from the phone. */
+function logTables() {
+  const tables = [];
+  const rows = activeRows();
+  if (rows.length) {
+    const width = FIELDS.length;
+    const data = new Float64Array(rows.length * width).fill(NaN);
+    rows.forEach((row, index) => {
+      // Rows logged by an older version are shorter: their missing columns stay empty.
+      for (let column = 0; column < width; column += 1) if (typeof row[column] === 'number') data[index * width + column] = row[column];
+    });
+    tables.push({ stream: 'obd', columns: FIELDS, data });
+  }
+  if (phoneSamples()) {
+    for (const { name } of LOG_STREAMS) {
+      const table = state.samples.table(name);
+      if (table) tables.push({ stream: name, ...table });
+    }
+  }
+  return tables;
+}
 
 /** Build the export files, or reuse them while the log has not changed. A long log takes a moment. */
 async function prepareExport(button) {
@@ -940,17 +963,14 @@ function renderPhone() {
 // --- Drift view ------------------------------------------------------------------
 
 function showView(view) {
-  state.view = view === 'drift' ? 'drift' : 'car';
+  state.view = VIEWS.includes(view) ? view : 'car';
   writeStored(VIEW_KEY, state.view);
-  $('drift').hidden = state.view !== 'drift';
   document.querySelector('.dash').hidden = state.view !== 'car';
-  $('view-car').setAttribute('aria-pressed', String(state.view === 'car'));
-  $('view-drift').setAttribute('aria-pressed', String(state.view === 'drift'));
+  $('drift').hidden = state.view !== 'drift';
+  $('replay').hidden = state.view !== 'replay';
+  for (const name of VIEWS) $(`view-${name}`).setAttribute('aria-pressed', String(state.view === name));
+  if (state.view !== 'replay') state.replay.pause();
   state.dirty = true;
-}
-
-function zoomMap(step) {
-  writeStored(ZOOM_KEY, String(state.map.zoomBy(step)));
 }
 
 const NO_DRIFT = { heading: null, course: null, driftAngle: null, yawRate: null, position: null, calibrated: false, corrected: false, aided: false };
@@ -982,7 +1002,7 @@ function renderDrift() {
   const car = wheelSpeed();
   $('drift-car').textContent = car === null ? '--' : String(Math.round(car * 3.6));
   $('drift-turn').textContent = drift.yawRate === null ? '--' : String(Math.round(drift.yawRate));
-  $('map-hint').textContent = position ? '' : live ? 'Waiting for a GPS position' : 'No position yet';
+  state.map.hint = position ? '' : live ? 'Waiting for a GPS position' : 'No position yet';
   $('drift-note').textContent = driftNote(drift, live, line);
 }
 
@@ -999,7 +1019,7 @@ function renderTrace() {
   if (atEnd) view.scrollTop = view.scrollHeight;
 }
 
-function render() {
+function render(now) {
   if (state.dirty) {
     state.dirty = false;
     renderValues();
@@ -1009,6 +1029,7 @@ function render() {
     renderBattery();
   }
   if (state.view === 'drift') renderDrift();
+  if (state.view === 'replay') state.replay.frame(now);
   renderTrace();
   requestAnimationFrame(render);
 }
@@ -1030,15 +1051,24 @@ function buildPhoneList() {
 
 async function init() {
   buildPhoneList();
-  state.map = new TrackMap(
-    { view: $('map'), tiles: $('map-tiles'), path: $('map-path'), car: $('map-car'), body: $('map-body'), course: $('map-course') },
-    Number(readStored(ZOOM_KEY)),
-  );
-  $('view-car').addEventListener('click', () => showView('car'));
-  $('view-drift').addEventListener('click', () => showView('drift'));
-  $('zoom-in').addEventListener('click', () => zoomMap(1));
-  $('zoom-out').addEventListener('click', () => zoomMap(-1));
-  showView(readStored(VIEW_KEY));
+  // The maps of the drift view and of the replay show the same layer at the same zoom, kept for the next start.
+  const maps = [];
+  const mapOptions = {
+    zoom: Number(readStored(ZOOM_KEY)),
+    layer: readStored(LAYER_KEY),
+    onChange: (settings) => {
+      writeStored(ZOOM_KEY, String(settings.zoom));
+      writeStored(LAYER_KEY, settings.layer);
+      for (const map of maps) map.show(settings);
+    },
+  };
+  state.map = new TrackMap($('map'), mapOptions);
+  const replayMap = new TrackMap($('replay-map'), mapOptions);
+  maps.push(state.map, replayMap);
+  state.replay = new ReplayView({ $, map: replayMap, logTables, readStored, writeStored });
+  for (const name of VIEWS) $(`view-${name}`).addEventListener('click', () => showView(name));
+  // The app opens on a live view: a replay is something to come back to, not to start a drive with.
+  showView(readStored(VIEW_KEY) === 'drift' ? 'drift' : 'car');
   loadBatterySettings();
   for (const id of ['battery-capacity', 'battery-type', 'battery-correction']) $(id).addEventListener('change', saveBatterySettings);
   $('connect').addEventListener('click', () => connect());
@@ -1094,6 +1124,9 @@ async function init() {
     if (state.mode === 'serial' || state.mode === 'phone') {
       state.trace.note(visible ? 'page in front again' : 'page hidden: the browser pauses the readout and the sensors');
     }
+    // A phone that slept leaves the clock of the recording behind. Nothing was recorded meanwhile, so it can move on.
+    const behind = visible && state.controller ? state.clock.catchUp() : 0;
+    if (behind) activeTrace().note(`the clock of the recording was ${(behind / 1000).toFixed(1)} s behind after the pause and was moved on`);
     flush();
     saveTrace();
     if (state.controller) keepAwake(true);

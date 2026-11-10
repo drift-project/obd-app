@@ -92,6 +92,23 @@ export class SampleLog {
     return [Math.min(...ranges.map(([first]) => first)), Math.max(...ranges.map(([, last]) => last))];
   }
 
+  /**
+   * The stream as one table for replay: `{ columns, data }` with the
+   * timestamp as the first column and the samples one after another in
+   * `data`, or null when it has no samples.
+   */
+  table(name) {
+    const stream = this.#streams.get(name);
+    if (!stream.samples) return null;
+    const data = new Float64Array(stream.samples * stream.width);
+    let offset = 0;
+    for (const block of stream.pending.length ? [...stream.blocks, stream.pending] : stream.blocks) {
+      data.set(block, offset);
+      offset += block.length;
+    }
+    return { columns: ['timestamp_ms', ...stream.columns], data };
+  }
+
   /** The stream as CSV text, or null when it has no samples. */
   csv(name) {
     const stream = this.#streams.get(name);

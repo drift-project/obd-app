@@ -86,7 +86,8 @@ test('the estimator follows the demo drive fed the way the app feeds it', () => 
   assert.ok(worst < 2, `worst error ${worst.toFixed(1)} degrees`);
 });
 
-test('the demo starts at a real place', () => {
-  assert.ok(DEMO_START.latitude > 52 && DEMO_START.latitude < 53);
-  assert.ok(DEMO_START.longitude > 13 && DEMO_START.longitude < 14);
+test('the demo starts at a real place in Poland, where the pictures from the air reach', () => {
+  // The bounds of Moto Park Ułęż as OpenStreetMap gives them.
+  assert.ok(DEMO_START.latitude > 51.6130 && DEMO_START.latitude < 51.6269);
+  assert.ok(DEMO_START.longitude > 22.0837 && DEMO_START.longitude < 22.1102);
 });

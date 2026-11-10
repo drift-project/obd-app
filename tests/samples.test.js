@@ -87,6 +87,25 @@ test('span covers every stream, stored or not yet', () => {
   assert.deepEqual(log.span(), [T0 + 100, T0 + 900]);
 });
 
+test('a stream is handed to the replay as one table, stored blocks and new samples together', () => {
+  const log = new SampleLog(STREAMS);
+  assert.equal(log.table('gps'), null);
+  log.add('gps', [T0, T0 - 250, 52.2296756, null]);
+  log.take();
+  log.add('gps', [T0 + 1000, T0 + 750, 52.2296801, 110.5]);
+  const { columns, data } = log.table('gps');
+  assert.deepEqual(columns, ['timestamp_ms', 'fix_ms', 'latitude_deg', 'altitude_m']);
+  assert.ok(data instanceof Float64Array);
+  assert.equal(data.length, 8);
+  assert.deepEqual([...data.slice(0, 3)], [T0, T0 - 250, 52.2296756]);
+  assert.ok(Number.isNaN(data[3]), 'a missing value stays missing');
+  assert.deepEqual([...data.slice(4)], [T0 + 1000, T0 + 750, 52.2296801, 110.5]);
+  // The table is a copy: the log goes on while a replay holds it.
+  log.add('gps', [T0 + 2000, T0 + 1750, 52.23, 111]);
+  assert.equal(data.length, 8);
+  assert.equal(log.table('gps').data.length, 12);
+});
+
 test('clear empties every stream', () => {
   const log = new SampleLog(STREAMS);
   log.add('gyroscope', [T0, 1, 2, 3]);

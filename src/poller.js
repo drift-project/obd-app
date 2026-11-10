@@ -53,33 +53,59 @@ export class OBDPoller {
     return this.hasVoltage ? [...fields, VOLTAGE_FIELD] : fields;
   }
 
-  /** Read one row: [timestamp_ms, value per column in FIELDS order (null if missing)]. */
+  /**
+   * Read one cycle and return its rows, each [timestamp_ms, value per column
+   * in FIELDS order (null if missing)].
+   *
+   * Where the car answers several PIDs in one request (CAN), a cycle is short
+   * and gives one row. Where every value is a request of its own (K-line), a
+   * cycle takes most of a second, so each value gets a row of its own with the
+   * time of its own request.
+   */
   async poll() {
-    const start = this.clock();
-    const values = this.fast.length ? await this.elm.query(this.fast) : new Map();
-    if (this.slow.length && start - this.lastSlow >= this.slowIntervalMs) {
+    const rows = [];
+    const seen = new Map();
+    const row = (time, values, volts = null) => [Math.round(time), ...COLUMNS.map((pid) => values.get(pid) ?? null), volts];
+    // Unknown until the first request with several PIDs has been answered: then it is tried, not assumed.
+    const single = this.elm.multiPidWorks === false;
+    // A value was sampled somewhere between its request and its answer: the middle is the best guess.
+    const timed = async (read) => {
+      const start = this.clock();
+      const result = await read();
+      return [result, (start + this.clock()) / 2];
+    };
+    const query = async (pids) => {
+      const [values, time] = await timed(() => this.elm.query(pids));
+      for (const [pid, value] of values) seen.set(pid, value);
+      if (single && values.size) rows.push(row(time, values));
+    };
+
+    const cycleStart = this.clock();
+    if (single) for (const pid of this.fast) await query([pid]);
+    else if (this.fast.length) await query(this.fast);
+    if (this.slow.length && cycleStart - this.lastSlow >= this.slowIntervalMs) {
       const pid = this.slow[this.slowIndex % this.slow.length];
       this.slowIndex += 1;
-      this.lastSlow = start;
-      for (const [key, value] of await this.elm.query([pid])) values.set(key, value);
+      this.lastSlow = cycleStart;
+      await query([pid]);
     }
     let volts = null;
     if (this.hasVoltage) {
-      const rpm = values.get(0x0c);
+      const rpm = seen.get(0x0c);
       const interval = rpm !== undefined && rpm >= RUNNING_RPM ? VOLTAGE_INTERVAL_MS : 0;
-      if (start - this.lastVoltage >= interval) {
-        this.lastVoltage = start;
-        volts = await this.elm.readVoltage();
+      if (cycleStart - this.lastVoltage >= interval) {
+        this.lastVoltage = cycleStart;
+        const [reading, time] = await timed(() => this.elm.readVoltage());
+        volts = reading;
+        if (single && volts !== null) rows.push(row(time, new Map(), volts));
       }
     }
-    const end = this.clock();
-    this.emptyPolls = values.size ? 0 : this.emptyPolls + 1;
+    this.emptyPolls = seen.size ? 0 : this.emptyPolls + 1;
     if (this.emptyPolls >= MAX_EMPTY_POLLS) {
       throw new ELM327Error(`no data for ${MAX_EMPTY_POLLS} polls (ignition off?)`);
     }
-    // Middle of the request: the values were sampled somewhere in between.
-    const timestampMs = Math.round((start + end) / 2);
-    return [timestampMs, ...COLUMNS.map((pid) => values.get(pid) ?? null), volts];
+    if (!single) rows.push(row((cycleStart + this.clock()) / 2, seen, volts));
+    return rows;
   }
 }
 
@@ -200,12 +226,12 @@ export async function run(
       let summaryAt = now();
       let summaryRows = 0;
       while (!signal.aborted) {
-        const row = await poller.poll();
+        const rows = await poller.poll();
         if (signal.aborted) break;
-        sink(row);
-        stats.rows += 1;
-        rowsSinceStatus += 1;
-        summaryRows += 1;
+        for (const row of rows) sink(row);
+        stats.rows += rows.length;
+        rowsSinceStatus += rows.length;
+        summaryRows += rows.length;
         polls += 1;
         stats.requestMs = requestMs();
         stats.voltage = elm.voltage;

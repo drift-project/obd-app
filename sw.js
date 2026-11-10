@@ -8,12 +8,13 @@
 // the version of the app (APP_VERSION in src/app.js; a test checks the two
 // agree). Only a changed copy makes the phones fetch a release: the browser
 // looks for one whenever the app is opened. The new copy stores
-// the whole app in a cache of its own and takes over only once every file has
-// arrived. Until then the release before it goes on serving its own files: a
-// slow or broken connection leaves the running release as it is, and the
-// download is tried again the next time. Once the new release has taken over,
-// the caches of older ones are removed and the open page hears of it
-// (src/update.js reloads the page or offers the new release).
+// the whole app in a cache of its own; a slow or broken connection leaves the
+// running release as it is, and the download is tried again the next time.
+// Stored, the new release waits: a page that has loaded all its files lets it
+// take over ('take-over', see src/update.js) and loads itself again, and
+// otherwise it takes over by itself once no page of the release before is
+// open. It never takes over while a page is still loading the files of the
+// release before. Once it has, the caches of older releases are removed.
 //
 // The files of the app are answered from the cache of the running release,
 // without asking the server, and marked 'no-cache' for the browser. Without
@@ -27,7 +28,7 @@
 // sites from other folders of the same origin. Only caches with this prefix
 // are ever removed here.
 const CACHE_PREFIX = 'drifthing-obd-';
-const CACHE = `${CACHE_PREFIX}0.9.2`;
+const CACHE = `${CACHE_PREFIX}0.9.3`;
 const NETWORK_TIMEOUT_MS = 2500;
 const ASSETS = [
   './',
@@ -77,12 +78,12 @@ const APP_FILES = new Set(ASSETS.map((path) => new URL(path, self.location.href)
 self.addEventListener('install', (event) => {
   // All or nothing: one file that cannot be fetched fails the install, and the running release stays.
   // 'no-cache' makes the browser check every file with the server instead of trusting its HTTP cache.
-  event.waitUntil(
-    caches
-      .open(CACHE)
-      .then((cache) => cache.addAll(ASSETS.map((path) => new Request(path, { cache: 'no-cache' }))))
-      .then(() => self.skipWaiting()),
-  );
+  event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(ASSETS.map((path) => new Request(path, { cache: 'no-cache' })))));
+});
+
+// A page of the release before has loaded all its files and is not recording: the new release may take over.
+self.addEventListener('message', (event) => {
+  if (event.data === 'take-over') self.skipWaiting();
 });
 
 self.addEventListener('activate', (event) => {

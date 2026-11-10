@@ -27,13 +27,13 @@ Zmiana wypchnięta na `main` jest pod tym adresem zwykle po około minucie.
 
 Po pierwszym otwarciu aplikacja działa także bez internetu: pliki zostają w pamięci telefonu (service worker), więc w aucie wystarczy uruchomić ją z ikony.
 
-**Aktualizacje.** Aplikacja zawsze uruchamia się z plików zapisanych w telefonie, wszystkich z jednej wersji (numer wersji jest w stopce strony). Przy każdym otwarciu z internetem Chrome sprawdza, czy na serwerze jest nowsza wersja. Jeśli jest, pobiera ją w tle w całości i dopiero wtedy przełącza; do tego czasu działa dotychczasowa. Przerwane albo bardzo wolne pobieranie (słaby zasięg) niczego nie psuje: strona nigdy nie dostaje części plików z jednej wersji, a części z drugiej, a pobieranie ponowi się przy następnym otwarciu. Gdy nowa wersja jest gotowa:
+**Aktualizacje.** Aplikacja zawsze uruchamia się z plików zapisanych w telefonie, wszystkich z jednej wersji (numer wersji jest w stopce strony). Przy każdym otwarciu z internetem Chrome sprawdza, czy na serwerze jest nowsza wersja. Jeśli jest, pobiera ją w tle w całości; do tego czasu działa dotychczasowa, a przełączenie następuje dopiero, gdy otwarta strona załadowała już wszystkie swoje pliki. Przerwane albo bardzo wolne pobieranie (słaby zasięg) niczego nie psuje: strona nigdy nie dostaje części plików z jednej wersji, a części z drugiej, a pobieranie ponowi się przy następnym otwarciu. Gdy nowa wersja jest gotowa:
 
-- strona, której jeszcze nie dotknięto, przeładowuje się sama (zwykle kilka sekund po otwarciu),
+- strona, której jeszcze nie dotknięto, przełącza się na nią i przeładowuje sama (zwykle kilka sekund po otwarciu),
 - strona, której już używasz, pokazuje na górze pasek "A new version of the app is ready." z przyciskiem **Reload**,
 - w trakcie zapisu przejazdu (także Demo) strona nigdy nie przeładowuje się sama; pasek prosi o przeładowanie po jeździe, a przycisk pojawia się po zatrzymaniu zapisu. Log z auta i czujników jest zapisany w telefonie (chyba że w sekcji Log widnieje "Memory only"), więc przeładowanie go nie kasuje.
 
-Pierwsze otwarcie po przejściu z wersji 0.9.1 lub starszej może jeszcze pokazać starą wersję; od następnego otwarcia działa już powyższy sposób.
+Pobrana wersja, na którą strona się nie przełączyła, włącza się sama przy następnym uruchomieniu po zamknięciu aplikacji (na liście ostatnich aplikacji). Tak samo trzeba raz zamknąć i otworzyć aplikację przy przejściu z wersji 0.9.2 lub starszej, które jeszcze tego nie umiały; potem działa już powyższy sposób.
 
 ### Lista adapterów jest pusta
 

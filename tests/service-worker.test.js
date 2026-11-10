@@ -157,10 +157,11 @@ function site({ otherCaches = [] } = {}) {
     // The worker script runs as it is, with these objects as its whole global scope.
     runInNewContext(code, { self, caches, fetch, Request: FakeRequest, Response: FakeResponse, Headers: FakeHeaders, setTimeout, URL }, { filename: 'sw.js' });
 
-    const dispatch = (type, request) => {
+    const dispatch = (type, request, data) => {
       const waits = [];
       const event = {
         request,
+        data,
         response: undefined,
         waitUntil: (promise) => waits.push(promise),
         respondWith: (promise) => {
@@ -178,6 +179,8 @@ function site({ otherCaches = [] } = {}) {
       cacheName,
       install: () => dispatch('install').settled(),
       activate: () => dispatch('activate').settled(),
+      /** A message from a page, as navigator.serviceWorker.controller.postMessage sends it. */
+      message: (data) => dispatch('message', undefined, data),
       get: (url, method = 'GET') => dispatch('fetch', new FakeRequest(url, { method })),
       storedUrls: () => [...storage.get(cacheName()).keys()],
       storedBody: (url) => storage.get(cacheName()).get(url)?.body,
@@ -223,6 +226,17 @@ test('install stores the app and asks the server for every file', async () => {
   assert.equal(phone.asked.length, urls.length);
   // 'no-cache' makes the browser check with the server instead of trusting its HTTP cache.
   assert.ok(phone.asked.every((request) => request.cache === 'no-cache'));
+});
+
+test('a stored release waits until a page that has loaded lets it take over', async () => {
+  // Taking over at once could switch a page that is still loading the files of the release before.
+  const phone = site();
+  const worker = phone.worker();
+  await worker.install();
+  assert.equal(worker.counts.skipWaiting, 0);
+  worker.message('something else');
+  assert.equal(worker.counts.skipWaiting, 0);
+  worker.message('take-over');
   assert.equal(worker.counts.skipWaiting, 1);
 });
 
@@ -274,9 +288,12 @@ test('a page loaded while the next release downloads gets every file from the re
   phone.fireTimeout();
   const page = await Promise.all(loads);
   assert.deepEqual(page.map(releaseOf), ['N', 'N', 'N', 'N']);
-  assert.equal(next.counts.skipWaiting, 0, 'not before the slow file is there');
   slow.resolve(reply(`N+1 ${MAP}`));
   await installing;
+  // Stored whole, N+1 waits for the loaded page to let it in.
+  assert.deepEqual((await worker.get(MAP).response).body, `N ${MAP}`);
+  next.message('take-over');
+  assert.equal(next.counts.skipWaiting, 1);
   await next.activate();
   // From now on every file is of N+1, and N is gone.
   const after = await Promise.all([PAGE, SCRIPT, MAP, STYLES].map((url) => next.get(url).response));

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#05090e">
-  <meta name="description" content="DRIFThing OBD: live car data from an ELM327 adapter, logged for drift analysis.">
+  <meta name="description" content="DRIFThing OBD: live car data from an ELM327 adapter, logged with the phone's motion sensors and GPS for drift analysis.">
   <title>DRIFThing OBD</title>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="assets/icon.svg" type="image/svg+xml">
@@ -40,9 +40,15 @@
       </div>
 
       <div class="side">
-        <div class="speed" data-field="speed_kmh">
-          <span class="big" data-value="speed_kmh">--</span>
-          <span class="unit">km/h</span>
+        <div class="speeds">
+          <div class="speed car" data-field="speed_kmh">
+            <span class="big" data-value="speed_kmh">--</span>
+            <span class="unit">km/h<br>car</span>
+          </div>
+          <div class="speed">
+            <span class="big" id="gps-speed">--</span>
+            <span class="unit">km/h<br>GPS</span>
+          </div>
         </div>
 
         <div class="bars">
@@ -76,19 +82,26 @@
       <button id="demo" class="button" type="button">Demo</button>
       <button id="disconnect" class="button" type="button" hidden>Disconnect</button>
       <button id="other" class="link" type="button" hidden>Choose another adapter</button>
+      <button id="phone-only" class="link" type="button">Record the phone sensors without the car</button>
     </section>
 
     <section class="log" aria-label="Recorded data">
       <div class="log-summary">
         <h2>Log <span id="log-tag" class="tag" hidden>Demo</span></h2>
         <p><strong id="row-count">0</strong> rows <span id="log-span"></span></p>
+        <p id="phone-summary" hidden><strong id="sample-count">0</strong> phone samples <span id="sample-span"></span></p>
       </div>
       <div class="log-actions">
-        <button id="save" class="button" type="button" disabled>Save CSV</button>
+        <button id="save" class="button" type="button" disabled>Save</button>
         <button id="share" class="button" type="button" hidden disabled>Share</button>
         <button id="clear" class="button danger" type="button" disabled>Clear</button>
       </div>
     </section>
+
+    <details id="phone" class="adapter">
+      <summary>Phone sensors</summary>
+      <dl id="phone-list"></dl>
+    </details>
 
     <details class="adapter">
       <summary>Adapter details</summary>

@@ -217,11 +217,26 @@ main {
   gap: 2px;
 }
 
+/* Speed of the car and speed over ground side by side: their difference is wheel slip. */
+.speeds {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.speeds .big {
+  font-size: clamp(2.5rem, 13vw, 3.75rem);
+}
+
 .speed {
   display: flex;
   align-items: baseline;
   justify-content: center;
-  gap: 10px;
+  gap: 8px;
+}
+
+.speed .unit {
+  line-height: 1.35;
 }
 
 .bars {
@@ -311,11 +326,18 @@ small {
   opacity: 0.4;
 }
 
-.dash {
+/* Car values that are not live are dimmed; the GPS speed next to them stays lit. */
+.dash .gauge,
+.dash .car,
+.dash .bars,
+.dash .tiles {
   transition: opacity 150ms linear;
 }
 
-.dash.stale {
+.dash.stale .gauge,
+.dash.stale .car,
+.dash.stale .bars,
+.dash.stale .tiles {
   opacity: 0.4;
 }
 
@@ -506,7 +528,8 @@ summary:focus-visible {
     justify-content: flex-start;
   }
 
-  .big {
+  .big,
+  .speeds .big {
     font-size: clamp(3.25rem, 8vw, 5rem);
   }
 }

@@ -1,15 +1,19 @@
-// DRIFThing OBD: live dashboard and logger for an ELM327 adapter over Web Serial.
+// DRIFThing OBD: live dashboard and logger for an ELM327 adapter over Web Serial,
+// with the motion sensors and the GPS of the phone recorded next to the car data.
 
 import { fileName, toCsv } from './csv.js';
 import { ELM327, PROTOCOL_NAMES, protocolNumber } from './elm327.js';
 import { FIELDS } from './pids.js';
 import { pidList, run } from './poller.js';
+import { SampleLog } from './samples.js';
+import { PhoneSensors, STREAMS } from './sensors.js';
 import { ELM327Simulator, LoopbackTransport } from './simulator.js';
-import { RowStore } from './storage.js';
+import { RowStore, SampleStore } from './storage.js';
 import { Trace } from './trace.js';
 import { WebSerialTransport, pickPort } from './transports.js';
+import { zip } from './zip.js';
 
-const APP_VERSION = '0.2.3';
+const APP_VERSION = '0.3.0';
 const RPM_MAX = 8000;
 const REDLINE = 0.85;
 const FLUSH_MS = 1000; // a killed page loses at most about this much of the log
@@ -38,7 +42,7 @@ const onAndroid = /Android/i.test(`${navigator.userAgentData?.platform ?? ''} ${
 const count = new Intl.NumberFormat('en-US');
 
 const state = {
-  mode: null, // 'serial' | 'demo' | null
+  mode: null, // 'serial' | 'demo' | 'phone' | null
   controller: null,
   rows: [], // rows from the car; kept in IndexedDB until cleared
   demoRows: [], // demo rows; memory only, never mixed with car data
@@ -57,6 +61,16 @@ const state = {
   storeQueue: Promise.resolve(),
   dirty: true,
   clearTimer: null,
+  samples: new SampleLog(STREAMS), // phone sensor samples; kept in IndexedDB until cleared
+  sampleStore: null,
+  sensors: null, // the running PhoneSensors
+  sensorStates: [], // what each sensor is doing, or did in the last session
+  sensorRates: new Map(), // stream name -> samples per second, measured every second
+  sensorCounts: new Map(),
+  sensorRateAt: 0,
+  gps: null, // the newest position sample of the running session
+  clock: null, // steady epoch clock of the running session
+  prepared: null, // export files built for the log as it is now
 };
 
 const activeRows = () => (state.mode === 'demo' ? state.demoRows : state.rows);
@@ -70,10 +84,13 @@ function enqueue(operation) {
 }
 
 function flush() {
-  if (!state.pending.length) return;
-  const batch = state.pending;
-  state.pending = [];
-  enqueue(() => state.store.append(batch));
+  if (state.pending.length) {
+    const rows = state.pending;
+    state.pending = [];
+    enqueue(() => state.store.append(rows));
+  }
+  const samples = state.samples.take();
+  if (samples) enqueue(() => state.sampleStore.append(samples));
 }
 
 function readStored(key) {
@@ -111,6 +128,117 @@ function saveTrace() {
   if (state.trace.revision === state.traceSaved) return;
   state.traceSaved = state.trace.revision;
   writeStored(TRACE_KEY, JSON.stringify(state.trace));
+}
+
+// --- Phone sensors ------------------------------------------------------------------
+
+const STREAM_LABELS = {
+  accelerometer: 'Accelerometer',
+  linear_acceleration: 'Acceleration, no gravity',
+  gyroscope: 'Gyroscope',
+  magnetometer: 'Magnetometer',
+  orientation: 'Orientation',
+  relative_orientation: 'Orientation, no compass',
+  gps: 'GPS',
+};
+
+// Where each value sits in a position sample: [timestamp_ms, ...columns].
+const GPS = Object.fromEntries(STREAMS.find(({ name }) => name === 'gps').columns.map((column, index) => [column, index + 1]));
+
+/**
+ * Epoch time that cannot jump in the middle of a session: the wall clock is
+ * read once and the page's steady clock counts from there. Car rows and phone
+ * samples share it, so they line up.
+ */
+function sessionClock() {
+  const offset = Date.now() - performance.now();
+  return { now: () => offset + performance.now(), fromTicks: (ticks) => offset + ticks };
+}
+
+function onSample(name, values) {
+  state.samples.add(name, values);
+  if (name === 'gps') {
+    state.gps = values;
+    state.dirty = true;
+  }
+}
+
+/** Speed over ground from the newest fix in km/h, or null when the phone gave none. */
+function gpsSpeedKmh() {
+  const speed = state.gps?.[GPS.speed_ms];
+  return typeof speed === 'number' ? speed * 3.6 : null;
+}
+
+function gpsText() {
+  const accuracy = state.gps?.[GPS.accuracy_m];
+  const kmh = gpsSpeedKmh();
+  return [typeof accuracy === 'number' ? `±${Math.round(accuracy)} m` : '', kmh === null ? '' : `${Math.round(kmh)} km/h`].filter(Boolean).join(' · ');
+}
+
+/** What one sensor is doing, for the screen and the report. */
+function streamText({ name, state: phase, detail }) {
+  const samples = state.samples.count(name);
+  const total = samples ? `${count.format(samples)} samples` : '';
+  if (phase === 'on') {
+    const rate = state.sensorRates.get(name);
+    const speed = rate === undefined ? 'on' : `${rate.toFixed(rate < 10 ? 1 : 0)} Hz`;
+    return [speed, name === 'gps' ? gpsText() : '', total].filter(Boolean).join(' · ');
+  }
+  if (phase === 'starting') return 'starting…';
+  if (phase === 'off') return total || '--';
+  return [detail || phase, total].filter(Boolean).join(' · ');
+}
+
+const sensorStates = () => (state.sensorStates.length ? state.sensorStates : STREAMS.map(({ name }) => ({ name, state: 'off', detail: '' })));
+const sensorSummary = () => sensorStates().map((stream) => `${stream.name} ${streamText(stream)}`).join('; ');
+
+function measureRates() {
+  if (!state.sensors) return;
+  const now = performance.now();
+  const seconds = (now - state.sensorRateAt) / 1000;
+  if (seconds < 0.5) return;
+  for (const { name } of STREAMS) {
+    const total = state.samples.count(name);
+    state.sensorRates.set(name, Math.max(0, total - (state.sensorCounts.get(name) ?? total)) / seconds);
+    state.sensorCounts.set(name, total);
+  }
+  state.sensorRateAt = now;
+  state.dirty = true;
+}
+
+function startSensors() {
+  const sensors = new PhoneSensors({
+    toEpochMs: state.clock.fromTicks,
+    onSample,
+    onChange: () => {
+      state.sensorStates = sensors.states;
+      state.dirty = true;
+    },
+  });
+  state.sensors = sensors;
+  state.gps = null;
+  state.sensorRates.clear();
+  state.sensorCounts = new Map(STREAMS.map(({ name }) => [name, state.samples.count(name)]));
+  state.sensorRateAt = performance.now();
+  sensors.start();
+  state.sensorStates = sensors.states;
+  // A few seconds in, every sensor has either delivered or said why it cannot.
+  setTimeout(() => {
+    if (state.sensors === sensors) activeTrace().note(`phone sensors: ${sensorSummary()}`);
+  }, 4000);
+}
+
+function stopSensors() {
+  const sensors = state.sensors;
+  if (!sensors) return;
+  state.sensors = null;
+  sensors.stop();
+  state.sensorStates = sensors.states;
+  state.sensorRates.clear();
+  state.gps = null;
+  const shifted = Object.entries(sensors.clockShifts).filter(([, shift]) => shift !== 0);
+  const clocks = shifted.length ? `; sensor clocks moved to the page clock: ${shifted.map(([name, shift]) => `${name} ${shift} ms`).join(', ')}` : '';
+  activeTrace().note(`phone sensors stopped, ${count.format(state.samples.total)} samples in the log${clocks}`);
 }
 
 // --- Session ---------------------------------------------------------------------
@@ -169,10 +297,13 @@ function onProgress(text) {
   state.dirty = true;
 }
 
-function start(mode, makeElm) {
+/** Start a session: 'serial' and 'demo' read a car through `makeElm`, 'phone' records the phone sensors alone. */
+function start(mode, makeElm = null) {
   if (state.controller) return;
   state.mode = mode;
   state.controller = new AbortController();
+  state.clock = sessionClock();
+  state.prepared = null;
   state.latest.clear();
   state.progress = '';
   if (mode === 'demo') {
@@ -181,13 +312,23 @@ function start(mode, makeElm) {
   }
   showNotice('');
   keepAwake(true);
+  // The demo car is made up, so nothing real is recorded next to it.
+  if (mode !== 'demo') startSensors();
+  if (mode === 'phone') state.trace.note('recording the phone sensors without the car');
   updateControls();
-  run(makeElm, { signal: state.controller.signal, sink, status: onStatus, trace: activeTrace() })
+  const { signal } = state.controller;
+  const session = makeElm
+    ? run(makeElm, { signal, sink, status: onStatus, trace: activeTrace(), clock: state.clock.now })
+    : new Promise((resolve) => {
+        signal.addEventListener('abort', resolve, { once: true });
+      });
+  session
     .catch((error) => {
       activeTrace().problem(`the session stopped: ${error.message}`);
       showNotice(`The session stopped: ${error.message}`);
     })
     .finally(() => {
+      stopSensors();
       state.mode = null;
       state.controller = null;
       state.latest.clear();
@@ -239,6 +380,10 @@ function startDemo() {
   start('demo', () => new ELM327(new LoopbackTransport(simulator, { latencyMs }), { onProgress }));
 }
 
+function startPhone() {
+  start('phone');
+}
+
 function disconnect() {
   state.controller?.abort();
 }
@@ -275,10 +420,10 @@ function download(file) {
   setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
 
-/** Hand a file to the system share sheet; true when it was shared. */
-async function shareFile(file) {
+/** Hand files to the system share sheet; true when they were shared. */
+async function shareFiles(files) {
   try {
-    await navigator.share({ files: [file], title: file.name });
+    await navigator.share({ files, title: files[0].name });
     return true;
   } catch (error) {
     if (error.name !== 'AbortError') showNotice(`Sharing failed: ${error.message}`);
@@ -286,20 +431,114 @@ async function shareFile(file) {
   }
 }
 
-const canShare = (name, type) => Boolean(navigator.canShare?.({ files: [new File(['x'], name, { type })] }));
+const probeFile = (name, type) => new File(['x'], name, { type });
+const canShare = (...files) => Boolean(navigator.canShare?.({ files }));
 
-function exportFile() {
-  const prefix = state.mode === 'demo' ? 'obd_demo' : 'obd_data';
-  return new File([toCsv(activeRows())], fileName(new Date(), prefix), { type: 'text/csv' });
+const phoneSamples = () => (state.mode === 'demo' ? 0 : state.samples.total);
+
+/** Describes the files of a log for whoever opens them later. */
+function logInfo(stamp, rows) {
+  const lines = [
+    `DRIFThing OBD ${APP_VERSION} log, written ${stamp.toString()}`,
+    `Browser: ${navigator.userAgent}`,
+    '',
+    'Every file has timestamp_ms in its first column: milliseconds since 1970-01-01 UTC. The phone clock is read',
+    'once when a recording starts and a steady clock counts from there, so all files of a recording share one time line.',
+    '',
+    'Files:',
+  ];
+  if (rows) lines.push(`obd_data: ${rows} rows from the car over OBD2, one row per polling cycle.`);
+  for (const stream of STREAMS) {
+    const samples = state.samples.count(stream.name);
+    if (!samples) continue;
+    const [first, last] = state.samples.range(stream.name);
+    lines.push(
+      `phone_${stream.name}: ${samples} samples, ${clockTime(new Date(first))} to ${clockTime(new Date(last))}. ` +
+        `${stream.about}. Columns: timestamp_ms, ${stream.columns.join(', ')}.`,
+    );
+  }
+  lines.push(
+    '',
+    'Phone axes: x to the right of the screen, y to its top, z out of the screen.',
+    'Chrome gives a web page at most 60 readings a second from the motion sensors and 10 from the magnetometer.',
+  );
+  const absent = sensorStates().filter(({ state: phase }) => ['missing', 'blocked', 'failed', 'waiting'].includes(phase));
+  if (absent.length) lines.push('', 'Not recorded in the last session:', ...absent.map(({ name, detail }) => `${name}: ${detail}`));
+  return `${lines.join('\r\n')}\r\n`;
 }
 
-function save() {
-  download(exportFile());
-  markSaved();
+/** Everything in the log as named pieces of text: the car CSV, one CSV per phone sensor and a description. */
+function logEntries(stamp) {
+  const entries = [];
+  const rows = activeRows();
+  const demo = state.mode === 'demo';
+  if (rows.length) entries.push({ name: fileName(stamp, demo ? 'obd_demo' : 'obd_data'), type: 'text/csv', data: toCsv(rows) });
+  if (phoneSamples()) {
+    for (const { name } of STREAMS) {
+      const data = state.samples.csv(name);
+      if (data) entries.push({ name: fileName(stamp, `phone_${name}`), type: 'text/csv', data });
+    }
+    entries.push({ name: fileName(stamp, 'log_info', 'txt'), type: 'text/plain', data: logInfo(stamp, rows.length) });
+  }
+  return entries;
+}
+
+const asFile = ({ name, type, data }) => new File([data], name, { type });
+
+/** Build the export files, or reuse them while the log has not changed. A long log takes a moment. */
+async function prepareExport(button) {
+  const key = `${state.mode}:${activeRows().length}:${phoneSamples()}`;
+  if (state.prepared?.key === key) return state.prepared;
+  const label = button.textContent;
+  button.textContent = 'Preparing…';
+  try {
+    // Lets the label show before the work blocks the page.
+    await new Promise((resolve) => {
+      setTimeout(resolve, 30);
+    });
+    const stamp = new Date();
+    state.prepared = { key, stamp, entries: logEntries(stamp) };
+    return state.prepared;
+  } finally {
+    button.textContent = label;
+  }
+}
+
+async function save() {
+  try {
+    const { stamp, entries } = await prepareExport($('save'));
+    if (entries.length === 1) download(asFile(entries[0]));
+    else download(new File([await zip(entries, { date: stamp })], fileName(stamp, 'drifthing_log', 'zip'), { type: 'application/zip' }));
+    markSaved();
+  } catch (error) {
+    showNotice(`Saving failed: ${error.message}`);
+  }
 }
 
 async function share() {
-  if (await shareFile(exportFile())) markSaved();
+  let prepared;
+  try {
+    prepared = await prepareExport($('share'));
+  } catch (error) {
+    showNotice(`Sharing failed: ${error.message}`);
+    return;
+  }
+  // Sharing must follow a tap closely, and a long log can take longer than that to build.
+  if (navigator.userActivation && !navigator.userActivation.isActive) {
+    flash($('share'), 'Ready, tap again');
+    return;
+  }
+  const files = prepared.entries.map(asFile);
+  // Chrome shares at most ten files and 50 MB at a time.
+  if (!canShare(...files)) {
+    const megabytes = Math.ceil(files.reduce((sum, file) => sum + file.size, 0) / 1e6);
+    showNotice(
+      `Chrome cannot share this log in one go (${files.length} files, ${megabytes} MB). ` +
+        'Use Save: it packs everything into one ZIP file that can be sent from the Files app.',
+    );
+    return;
+  }
+  if (await shareFiles(files)) markSaved();
 }
 
 function disarmClear() {
@@ -323,7 +562,10 @@ function clear() {
   } else {
     state.rows = [];
     state.pending = [];
+    state.samples.clear();
+    state.prepared = null;
     enqueue(() => state.store.clear());
+    enqueue(() => state.sampleStore.clear());
     markSaved();
   }
   state.dirty = true;
@@ -353,6 +595,7 @@ function reportText() {
     `Car PIDs (mode 01): ${info?.supportedPids?.length ? pidList(info.supportedPids) : 'unknown'}`,
     `Request time: ${info?.requestMs ? `${info.requestMs} ms` : 'unknown'}`,
     `Rows in the log: ${activeRows().length}`,
+    `Phone sensors: ${demo ? 'not recorded in the demo' : sensorSummary()}`,
     `Problems: ${info?.errors ?? 0}${info?.lastError ? `, last: ${info.lastError}` : ''}`,
     '',
     'Conversation with the adapter, newest last (> sent, < received, # note, ! problem):',
@@ -392,7 +635,9 @@ function updateControls() {
   const running = state.controller !== null;
   $('connect').hidden = running;
   $('demo').hidden = running;
+  $('phone-only').hidden = running;
   $('disconnect').hidden = !running;
+  $('disconnect').textContent = state.mode === 'phone' ? 'Stop' : 'Disconnect';
   $('connect').disabled = !hasSerial;
   $('log-tag').hidden = state.mode !== 'demo';
   if (running) {
@@ -406,6 +651,7 @@ function updateControls() {
 }
 
 function statusText(info) {
+  if (state.mode === 'phone') return 'Recording phone';
   if (!info || info.phase === 'idle') return 'Disconnected';
   if (info.phase === 'connecting') return 'Connecting…';
   if (info.phase === 'reconnecting') return 'Reconnecting…';
@@ -430,7 +676,7 @@ function renderValues() {
   const live = state.info?.phase === 'connected';
   const supported = live ? new Set(state.info.supportedFields) : null;
   // While reconnecting the last values stay on screen, dimmed so they do not pass for live ones.
-  document.querySelector('.dash').classList.toggle('stale', state.controller !== null && !live);
+  document.querySelector('.dash').classList.toggle('stale', state.controller !== null && state.mode !== 'phone' && !live);
   // Values only some cars have (oil, outside air, catalyst) take no room where the car lacks them.
   const known = new Set(state.info?.supportedFields ?? []);
   for (const element of document.querySelectorAll('[data-field]')) {
@@ -456,7 +702,7 @@ function renderValues() {
 
 function renderInfo() {
   const info = state.info;
-  $('status').dataset.phase = info?.phase ?? 'idle';
+  $('status').dataset.phase = state.mode === 'phone' ? 'connected' : (info?.phase ?? 'idle');
   $('status').textContent = statusText(info);
   $('progress').textContent = state.progress ? `${state.progress}…` : '';
   $('progress').hidden = !state.progress;
@@ -471,12 +717,24 @@ function renderInfo() {
 
 function renderLog() {
   const rows = activeRows();
+  const samples = phoneSamples();
+  const empty = rows.length === 0 && samples === 0;
   $('row-count').textContent = count.format(rows.length);
   $('log-span').textContent = spanText(rows);
-  $('save').disabled = rows.length === 0;
-  $('share').disabled = rows.length === 0;
-  $('clear').disabled = rows.length === 0;
-  if (rows.length === 0 && state.clearTimer) disarmClear();
+  $('phone-summary').hidden = samples === 0;
+  $('sample-count').textContent = count.format(samples);
+  const span = samples ? state.samples.span() : null;
+  $('sample-span').textContent = span ? `· ${clockTime(new Date(span[0]))} → ${clockTime(new Date(span[1]))}` : '';
+  $('save').disabled = empty;
+  $('share').disabled = empty;
+  $('clear').disabled = empty;
+  if (empty && state.clearTimer) disarmClear();
+}
+
+function renderPhone() {
+  for (const stream of sensorStates()) $(`phone-${stream.name}`).textContent = streamText(stream);
+  const kmh = gpsSpeedKmh();
+  $('gps-speed').textContent = kmh === null ? '--' : String(Math.round(kmh));
 }
 
 /** The diagnostic log is redrawn only while it is open and only when it changed. */
@@ -498,6 +756,7 @@ function render() {
     renderValues();
     renderInfo();
     renderLog();
+    renderPhone();
   }
   renderTrace();
   requestAnimationFrame(render);
@@ -505,23 +764,39 @@ function render() {
 
 // --- Startup ---------------------------------------------------------------------
 
+function buildPhoneList() {
+  for (const { name } of STREAMS) {
+    const row = document.createElement('div');
+    const label = document.createElement('dt');
+    const value = document.createElement('dd');
+    label.textContent = STREAM_LABELS[name];
+    value.id = `phone-${name}`;
+    value.textContent = '--';
+    row.append(label, value);
+    $('phone-list').append(row);
+  }
+}
+
 async function init() {
+  buildPhoneList();
   $('connect').addEventListener('click', () => connect());
   $('other').addEventListener('click', () => connect({ choose: true }));
   $('demo').addEventListener('click', startDemo);
+  $('phone-only').addEventListener('click', startPhone);
   $('disconnect').addEventListener('click', disconnect);
   $('save').addEventListener('click', save);
   $('share').addEventListener('click', share);
   $('clear').addEventListener('click', clear);
   $('trace-copy').addEventListener('click', copyReport);
   $('trace-save').addEventListener('click', () => download(reportFile()));
-  $('trace-share').addEventListener('click', () => shareFile(reportFile()));
+  $('trace-share').addEventListener('click', () => shareFiles([reportFile()]));
   $('diagnostics').addEventListener('toggle', () => {
     state.traceShown = '';
   });
 
-  $('share').hidden = !canShare('probe.csv', 'text/csv');
-  $('trace-share').hidden = !canShare('probe.txt', 'text/plain');
+  // A log is shared as several CSV files and a text file in one go.
+  $('share').hidden = !canShare(probeFile('a.csv', 'text/csv'), probeFile('b.csv', 'text/csv'), probeFile('c.txt', 'text/plain'));
+  $('trace-share').hidden = !canShare(probeFile('probe.txt', 'text/plain'));
   $('app-version').textContent = APP_VERSION;
 
   if (!hasSerial) {
@@ -536,6 +811,8 @@ async function init() {
 
   state.store = await RowStore.create();
   state.rows = await state.store.load().catch(() => []);
+  state.sampleStore = await SampleStore.create();
+  state.samples.load(await state.sampleStore.load().catch(() => []));
   state.savedRows = Math.min(Number(readStored(SAVED_KEY)) || 0, state.rows.length);
   // Ask the browser not to drop the app and its log when the phone runs low on space.
   const kept = state.store.persistent && (await navigator.storage?.persist?.().catch(() => false));
@@ -543,6 +820,7 @@ async function init() {
   else $('info-storage').textContent = kept ? 'Saved on this device until cleared' : 'Saved on this device (the browser may drop it if space runs out)';
 
   setInterval(flush, FLUSH_MS);
+  setInterval(measureRates, 1000);
   setInterval(saveTrace, TRACE_SAVE_MS);
   addEventListener('pagehide', () => {
     flush();
@@ -550,7 +828,9 @@ async function init() {
   });
   document.addEventListener('visibilitychange', () => {
     const visible = document.visibilityState === 'visible';
-    if (state.mode === 'serial') state.trace.note(visible ? 'page in front again' : 'page hidden: the browser may pause the readout');
+    if (state.mode === 'serial' || state.mode === 'phone') {
+      state.trace.note(visible ? 'page in front again' : 'page hidden: the browser pauses the readout and the sensors');
+    }
     flush();
     saveTrace();
     if (state.controller) keepAwake(true);

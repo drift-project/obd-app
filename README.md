@@ -11,7 +11,27 @@ To wersja na pierwszy test: bez instalacji, bez budowania, bez wysyłania danych
 - Do starszych aut (przed CAN, na przykład BMW E39) adapter musi obsługiwać linię K, czyli protokoły ISO 9141-2 i KWP2000. Część najtańszych klonów, zwłaszcza podpisanych "v2.1", obsługuje tylko CAN i z takim autem się nie połączy.
 - iPhone nie zadziała: przeglądarki na iOS nie mają dostępu do portów szeregowych.
 
+## Adres
+
+Aplikacja jest opublikowana na GitHub Pages z gałęzi `main` tego repo:
+
+**https://drift-project.github.io/obd-app/**
+
+Zmiana wypchnięta na `main` jest pod tym adresem zwykle po około minucie.
+
+## Uruchomienie na telefonie
+
+1. Otwórz adres w Chrome na telefonie.
+2. Z menu Chrome wybierz "Dodaj do ekranu głównego".
+3. Zamknij Chrome i otwórz aplikację z ikony.
+
+Po pierwszym otwarciu aplikacja działa także bez internetu: pliki zostają w pamięci telefonu (service worker), więc w aucie wystarczy uruchomić ją z ikony.
+
+Gdy internet jest, aplikacja przy każdym uruchomieniu pyta serwer o aktualne pliki. Żeby pobrać nową wersję, przeciągnij ekran w dół (odświeżenie) albo zamknij aplikację na liście ostatnich i otwórz ją ponownie. Numer wersji jest w stopce strony.
+
 ## Uruchomienie na laptopie
+
+Ten sam adres działa w Chrome i Edge na laptopie. Do pracy nad kodem aplikację uruchamia się lokalnie:
 
 ```bash
 npm start
@@ -19,15 +39,15 @@ npm start
 
 Otwórz `http://localhost:8093`. Przycisk **Demo** pokazuje aplikację na symulowanym aucie. **Connect adapter** otwiera listę portów (sparowany adapter jest na niej jako urządzenie Bluetooth albo port COM).
 
-Demo ma trzy warianty, wybierane w adresie strony:
+Demo ma trzy warianty, wybierane dopiskiem w adresie strony (lokalnie i pod adresem publicznym):
 
-- `http://localhost:8093/` to auto z CAN, około 20 wierszy na sekundę,
-- `http://localhost:8093/?car=kline` to stare auto z linią K (jak E39): jedna wartość na zapytanie, około 2 wierszy na sekundę,
-- `http://localhost:8093/?car=silent` to auto, które nie odpowiada: widać komunikat na ekranie i kolejne próby w dzienniku.
+- bez dopisku: auto z CAN, około 20 wierszy na sekundę,
+- `?car=kline`: stare auto z linią K (jak E39), jedna wartość na zapytanie, około 2 wierszy na sekundę,
+- `?car=silent`: auto, które nie odpowiada; widać komunikat na ekranie i kolejne próby w dzienniku.
 
-## Uruchomienie na telefonie
+### Lokalna wersja na telefonie
 
-Chrome udostępnia porty szeregowe tylko stronom z HTTPS albo z `localhost`. Bez publikowania strony najprościej przez USB:
+Zmiany, których nie ma jeszcze na `main`, da się sprawdzić na telefonie przez USB. Chrome udostępnia porty szeregowe tylko stronom z HTTPS albo z `localhost`, więc telefon musi widzieć lokalny serwer jako swój `localhost`:
 
 1. Włącz w telefonie debugowanie USB i podłącz go do laptopa.
 2. Na laptopie uruchom `npm start`, a w drugim terminalu:
@@ -36,18 +56,13 @@ Chrome udostępnia porty szeregowe tylko stronom z HTTPS albo z `localhost`. Bez
    adb reverse tcp:8093 tcp:8093
    ```
 
-3. W Chrome na telefonie otwórz `http://localhost:8093` i z menu wybierz "Dodaj do ekranu głównego".
-4. Odłącz kabel, zamknij Chrome i otwórz aplikację z ikony. Jeśli się otwiera, w aucie też się otworzy.
-
-Po pierwszym otwarciu aplikacja działa bez laptopa: pliki zostają w pamięci telefonu (service worker), więc w aucie wystarczy uruchomić ją z ikony. Numer wersji jest w stopce strony. Nową wersję telefon pobierze dopiero przy następnym otwarciu z podłączonym laptopem.
-
-Zamiast tego można wrzucić folder na dowolny hosting statyczny z HTTPS. Wtedy wystarczy sam link, a poprawki docierają na telefon po odświeżeniu strony, także przy aucie.
+3. W Chrome na telefonie otwórz `http://localhost:8093`.
 
 ## Test w aucie z samym telefonem
 
 W domu, zanim pojedziesz:
 
-1. Wgraj aplikację na telefon (rozdział wyżej) i sprawdź, że otwiera się bez laptopa.
+1. Otwórz aplikację na telefonie i dodaj ją do ekranu głównego (rozdział wyżej). Sprawdź, że otwiera się z ikony także w trybie samolotowym.
 2. Wepnij adapter w dowolne auto, włącz zapłon i sparuj adapter w ustawieniach Bluetooth telefonu.
 3. Zrób próbę na tym aucie: **Connect adapter**, wybierz adapter z listy, poczekaj na dane. Przy pierwszym razie Chrome poprosi o zgodę na urządzenia w pobliżu. Jeśli to działa, telefon, przeglądarka i adapter są sprawdzone, a w aucie docelowym zostaje do sprawdzenia tylko ono samo.
 
@@ -102,7 +117,7 @@ Aplikacja pyta auto, które wartości obsługuje, i czyta tylko te. Listy zgłos
 npm test
 ```
 
-Testy (Node 22, bez zależności) sprawdzają dekodowanie wartości, parsowanie odpowiedzi adaptera, sesję na symulatorze (CAN, linia K, klon odrzucający komendy, auto bez odpowiedzi, zawieszone szukanie protokołu), pętlę odczytu z ponownym łączeniem, dziennik diagnostyczny, transport Web Serial na podstawionym porcie, eksport CSV i listę plików do pracy bez serwera.
+Testy (Node 22, bez zależności) sprawdzają dekodowanie wartości, parsowanie odpowiedzi adaptera, sesję na symulatorze (CAN, linia K, klon odrzucający komendy, auto bez odpowiedzi, zawieszone szukanie protokołu), pętlę odczytu z ponownym łączeniem, dziennik diagnostyczny, transport Web Serial na podstawionym porcie, eksport CSV, listę plików do pracy bez serwera oraz service worker na podstawionym serwerze (start bez sieci, pobranie nowej wersji, wolny serwer).
 
 ## Pliki
 
@@ -110,5 +125,6 @@ Testy (Node 22, bez zależności) sprawdzają dekodowanie wartości, parsowanie 
 - `src/transports.js`: połączenie przez Web Serial. `src/simulator.js`: symulowany adapter i auto.
 - `src/trace.js`: dziennik diagnostyczny rozmowy z adapterem.
 - `src/app.js`, `index.html`, `styles.css`: ekran. `src/storage.js`, `src/csv.js`: log i eksport.
-- `sw.js`, `manifest.webmanifest`: praca bez serwera i ikona na ekranie głównym. Nowy plik aplikacji trzeba dopisać do listy w `sw.js` (pilnuje tego test).
+- `sw.js`, `manifest.webmanifest`: praca bez serwera, pobieranie nowej wersji i ikona na ekranie głównym. Nowy plik aplikacji trzeba dopisać do listy w `sw.js` (pilnuje tego test).
+- `.nojekyll`: GitHub Pages ma podawać pliki bez przetwarzania.
 - `tools/make_icons.py`: generuje ikony PNG (wymaga Pillow).

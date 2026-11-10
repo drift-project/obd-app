@@ -10,7 +10,7 @@ import { ELM327, PROTOCOL_NAMES, protocolNumber } from './elm327.js';
 import { powerHp } from './engine.js';
 import { offsetBy } from './geo.js';
 import { TrackMap } from './map.js';
-import { FIELDS } from './pids.js';
+import { DIAG_FIELDS, FIELDS } from './pids.js';
 import { pidList, run } from './poller.js';
 import { ReplayView } from './replay-view.js';
 import { SampleLog } from './samples.js';
@@ -22,7 +22,7 @@ import { WebSerialTransport, pickPort } from './transports.js';
 import { WheelWatch } from './wheels.js';
 import { zip } from './zip.js';
 
-const APP_VERSION = '0.8.1';
+const APP_VERSION = '0.9.0';
 const RPM_MAX = 8000;
 const REDLINE = 0.85;
 const FLUSH_MS = 1000; // a killed page loses at most about this much of the log
@@ -45,7 +45,13 @@ const ZOOM_KEY = 'drifthing-obd-map-zoom';
 const LAYER_KEY = 'drifthing-obd-map-layer'; // 'map' or 'orthophoto'
 const ZOOM3D_KEY = 'drifthing-obd-map-zoom-3d';
 const MAP_MODE_KEY = 'drifthing-obd-map-mode'; // '3d' (behind the car) or '2d' (flat, north up)
-const VIEWS = ['car', 'drift', 'replay'];
+const VIEWS = ['car', 'drift', 'replay', 'diag'];
+const READ_MODES = { all: 'everything', drift: 'for drifting', diag: 'for diagnostics' };
+// The map opens flat with the pictures from the air. This is the second time its defaults were set: a
+// choice stored under the first ones is forgotten once.
+const MAP_DEFAULTS_KEY = 'drifthing-obd-map-defaults';
+const MAP_DEFAULTS = '2';
+const DIAG_OLD_MS = 30000; // a diagnostic value not read again for this long is shown greyed
 const DRIFT_LOG_MS = 100; // the drift stream is written ten times a second
 
 // Everything recorded from the phone: its sensors and what the drift view worked out from them.
@@ -671,7 +677,7 @@ function start(mode, makeElm = null) {
   if (mode === 'demo') startDemoDrive();
   else startSensors();
   if (mode === 'phone') state.trace.note('recording the phone sensors without the car');
-  if (makeElm) activeTrace().note(`read mode: ${state.readMode === 'drift' ? 'for drifting' : 'everything'}`);
+  if (makeElm) activeTrace().note(`read mode: ${READ_MODES[state.readMode]}`);
   openSession(mode);
   updateControls();
   const { signal } = state.controller;
@@ -1157,6 +1163,7 @@ function showView(view) {
   document.querySelector('.dash').hidden = state.view !== 'car';
   $('drift').hidden = state.view !== 'drift';
   $('replay').hidden = state.view !== 'replay';
+  $('diag').hidden = state.view !== 'diag';
   for (const name of VIEWS) $(`view-${name}`).setAttribute('aria-pressed', String(state.view === name));
   if (state.view !== 'replay') state.replay.pause();
   state.dirty = true;
@@ -1223,6 +1230,7 @@ function render(now) {
     renderPhone();
     renderBattery();
     renderAlarm();
+    if (state.view === 'diag') renderDiag();
   }
   if (state.view === 'drift') renderDrift();
   if (state.view === 'replay') state.replay.frame(now);
@@ -1255,11 +1263,61 @@ function noteTileError(layer) {
   state.trace.note(`map: pieces of the layer "${layer}" did not load (no connection, or the server refused)`);
 }
 
+/** The diagnostic values: what the car can give, as last read. */
+function renderDiag() {
+  const info = state.info;
+  const live = info?.phase === 'connected' && state.mode !== 'phone';
+  const offered = new Set(info?.diagFields ?? []);
+  const now = performance.now();
+  const note = !live
+    ? 'Connect the adapter: the values the car reports show here.'
+    : state.readMode !== 'diag'
+      ? 'These are read only for diagnostics, which leaves fewer readings for the rest.'
+      : offered.size
+        ? `${offered.size} values, each read again every few seconds.`
+        : 'The car reports none of these values.';
+  if ($('diag-note').textContent !== note) $('diag-note').textContent = note;
+  $('diag-read').hidden = !live || state.readMode === 'diag';
+  const rows = DIAG_FIELDS.filter(({ name }) => offered.has(name) || state.latest.has(name));
+  const list = $('diag-list');
+  if (list.dataset.fields !== rows.map(({ name }) => name).join()) {
+    list.dataset.fields = rows.map(({ name }) => name).join();
+    list.replaceChildren(
+      ...rows.map(({ name, label }) => {
+        const row = document.createElement('div');
+        const term = document.createElement('dt');
+        const value = document.createElement('dd');
+        term.textContent = label;
+        value.id = `diag-${name}`;
+        row.append(term, value);
+        return row;
+      }),
+    );
+  }
+  for (const { name, unit, words } of rows) {
+    const value = state.latest.get(name);
+    const element = $(`diag-${name}`);
+    const gap = unit && unit !== '%' && unit !== '°' ? ' ' : '';
+    const text = value === undefined ? '--' : words ? words(value) : `${Number(value.toFixed(2))}${gap}${unit ?? ''}`;
+    if (element.textContent !== text) element.textContent = text;
+    element.parentElement.classList.toggle('old', !state.latestAt.has(name) || now - state.latestAt.get(name) > DIAG_OLD_MS);
+  }
+  // The check engine light and the stored codes, at the top.
+  const mil = state.latest.get('mil_on');
+  const codes = state.latest.get('trouble_codes');
+  $('diag-light').hidden = mil === undefined;
+  if (mil !== undefined) {
+    $('diag-light').textContent = mil ? `Check engine light ON, ${codes ?? '?'} trouble codes stored` : `Check engine light off, ${codes ?? 0} trouble codes stored`;
+    $('diag-light').classList.toggle('on', Boolean(mil));
+  }
+}
+
 function setReadMode(mode) {
-  state.readMode = mode === 'drift' ? 'drift' : 'all';
+  state.readMode = READ_MODES[mode] ? mode : 'all';
   writeStored(READ_MODE_KEY, state.readMode);
   $('read-mode').value = state.readMode;
-  if (state.controller && state.mode !== 'phone') activeTrace().note(`read mode: ${state.readMode === 'drift' ? 'for drifting' : 'everything'}`);
+  if (state.controller && state.mode !== 'phone') activeTrace().note(`read mode: ${READ_MODES[state.readMode]}`);
+  state.dirty = true;
 }
 
 async function init() {
@@ -1267,13 +1325,24 @@ async function init() {
   loadSessions();
   setReadMode(readStored(READ_MODE_KEY));
   $('read-mode').addEventListener('change', (event) => setReadMode(event.target.value));
+  $('diag-read').addEventListener('click', () => setReadMode('diag'));
   // The maps of the drift view and of the replay show the same layer at the same zoom, kept for the next start.
+  if (readStored(MAP_DEFAULTS_KEY) !== MAP_DEFAULTS) {
+    for (const key of [MAP_MODE_KEY, LAYER_KEY]) {
+      try {
+        localStorage.removeItem(key);
+      } catch {
+        // nothing stored, or no storage: the defaults apply either way
+      }
+    }
+    writeStored(MAP_DEFAULTS_KEY, MAP_DEFAULTS);
+  }
   const maps = [];
   const mapOptions = {
     zoom: Number(readStored(ZOOM_KEY)),
     zoom3d: Number(readStored(ZOOM3D_KEY)),
-    mode: readStored(MAP_MODE_KEY) ?? '3d',
-    layer: readStored(LAYER_KEY),
+    mode: readStored(MAP_MODE_KEY) ?? '2d',
+    layer: readStored(LAYER_KEY) ?? 'orthophoto',
     onChange: (settings) => {
       writeStored(ZOOM_KEY, String(settings.zoom));
       writeStored(ZOOM3D_KEY, String(settings.zoom3d));

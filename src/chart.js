@@ -96,35 +96,113 @@ export function plotDots(points, from, to, min, max) {
 const DOT_SPACING_PX = 3;
 const DOT_PX = 4.5;
 
+/** The unit of a signal, from the end of its column name: speed_kmh and ground_kmh are both km/h. */
+export function unitOf(column) {
+  const at = column.lastIndexOf('_');
+  return at < 0 ? column : column.slice(at + 1);
+}
+
+/**
+ * The value range each signal of a chart is drawn in: `signals` are
+ * `[{ column, min, max }]`. Signals of one unit share one range, so that
+ * they can be compared on the chart; signals of different units each keep
+ * their own.
+ */
+export function chartRanges(signals) {
+  const shared = signals.length > 1 && signals.every(({ column }) => unitOf(column) === unitOf(signals[0].column));
+  if (!shared) return signals.map(({ min, max }) => ({ min, max, shared: false }));
+  const min = Math.min(...signals.map((signal) => signal.min));
+  const max = Math.max(...signals.map((signal) => signal.max));
+  return signals.map(() => ({ min, max, shared: true }));
+}
+
+/** The colours of the lines of one chart, in the order the signals were added. */
+export const SERIES_COLORS = ['rgb(66, 186, 255)', 'rgb(255, 181, 71)', 'rgb(61, 220, 132)', 'rgb(255, 111, 181)'];
+
+/**
+ * One or more signals drawn over time, each line in its own colour, with a
+ * cursor at the replay position. The lines are redrawn only when the window
+ * of time changes; in between only the cursor moves.
+ */
 export class SignalChart {
   #marks = svg('g', { class: 'chart-marks' });
-  #line = svg('path', { class: 'chart-line', d: '' });
-  #dots = svg('path', { class: 'chart-dots', d: '' });
+  #lines = [];
   #plot;
   #cursor = svg('line', { class: 'chart-cursor', x1: 0, x2: 0, y1: 0, y2: HEIGHT });
-  #value = node('strong', 'chart-value', '--');
-  #high = node('span', '', '');
-  #low = node('span', '', '');
+  #rows = [];
+  #high = node('div', 'chart-scale-top');
+  #low = node('div', 'chart-scale-bottom');
+  #ranges = [];
   #from = 0;
   #to = 1;
-  #min = 0;
-  #max = 1;
 
   /**
-   * `name` and `source` label the signal. `onRemove()` is called by the
-   * button that takes the chart away, `onSeek(share)` by a tap on the plot,
-   * with the tapped place as a share of its width from 0 to 1.
+   * `series` (`[{ name, source }]`) label the signals. `onRemove(index)` is
+   * called by the button that takes one of them away, `onSeek(share)` by a
+   * tap on the plot, with the tapped place as a share of its width from 0
+   * to 1. `choices()` gives the signals that could be added, as `[{ label,
+   * options: [{ id, name }] }]`, and `onAdd(id)` adds one.
    */
-  constructor({ name, source, onRemove, onSeek }) {
+  constructor({ series, onRemove, onSeek, choices, onAdd }) {
     this.element = node('div', 'chart');
-    const head = node('div', 'chart-head');
-    const remove = node('button', 'chart-remove', '×');
-    remove.type = 'button';
-    remove.setAttribute('aria-label', `Remove ${name}`);
-    remove.addEventListener('click', onRemove);
-    head.append(node('span', 'chart-name', name), node('span', 'chart-source', source), this.#value, remove);
+    const heads = node('div', 'chart-heads');
+    series.forEach(({ name, source }, index) => {
+      const color = SERIES_COLORS[index % SERIES_COLORS.length];
+      const row = node('div', 'chart-head');
+      const swatch = node('span', 'chart-swatch');
+      swatch.style.background = color;
+      const value = node('strong', 'chart-value', '--');
+      value.style.color = color;
+      const remove = node('button', 'chart-remove', '×');
+      remove.type = 'button';
+      remove.setAttribute('aria-label', `Remove ${name}`);
+      remove.addEventListener('click', () => onRemove(index));
+      row.append(swatch, node('span', 'chart-name', name), node('span', 'chart-source', source), value, remove);
+      heads.append(row);
+      this.#rows.push(value);
+      const line = svg('path', { class: 'chart-line', d: '' });
+      const dots = svg('path', { class: 'chart-dots', d: '' });
+      line.style.stroke = color;
+      dots.style.stroke = color;
+      this.#lines.push({ line, dots });
+    });
+    // Another signal on this chart: a list of them takes the place of the button until one is picked.
+    const add = node('button', 'chart-add', '+');
+    add.type = 'button';
+    add.setAttribute('aria-label', 'Add a signal to this chart');
+    add.addEventListener('click', () => {
+      const pick = document.createElement('select');
+      pick.className = 'chart-pick';
+      pick.setAttribute('aria-label', 'Signal to add to this chart');
+      const first = document.createElement('option');
+      first.value = '';
+      first.textContent = 'Add to this chart…';
+      pick.append(first);
+      for (const { label, options } of choices()) {
+        const group = document.createElement('optgroup');
+        group.label = label;
+        for (const { id, name } of options) {
+          const option = document.createElement('option');
+          option.value = id;
+          option.textContent = name;
+          group.append(option);
+        }
+        pick.append(group);
+      }
+      pick.addEventListener('change', () => {
+        if (pick.value) onAdd(pick.value);
+        else pick.replaceWith(add);
+      });
+      pick.addEventListener('blur', () => {
+        if (pick.isConnected && !pick.value) pick.replaceWith(add);
+      });
+      add.replaceWith(pick);
+      pick.focus();
+    });
+    const firstRow = heads.firstChild;
+    firstRow.insertBefore(add, firstRow.querySelector('.chart-remove'));
     const plot = svg('svg', { class: 'chart-plot', viewBox: `0 0 ${WIDTH} ${HEIGHT}`, preserveAspectRatio: 'none' });
-    plot.append(this.#marks, this.#line, this.#dots, this.#cursor);
+    plot.append(this.#marks, ...this.#lines.flatMap(({ line, dots }) => [line, dots]), this.#cursor);
     this.#plot = plot;
     plot.addEventListener('click', (event) => {
       const box = plot.getBoundingClientRect();
@@ -134,46 +212,61 @@ export class SignalChart {
     scale.append(this.#high, this.#low);
     const body = node('div', 'chart-body');
     body.append(plot, scale);
-    this.element.append(head, body);
+    this.element.append(heads, body);
   }
 
   /**
-   * Draw `points` ([[time, value], ...]) for the window `from` to `to`. `min`
-   * and `max` are the signal's whole range, so the scale stays put from one
-   * window to the next. `breaks` are the times where the line is interrupted
-   * and `marks` (`[{ from, to, kind }]`) stretches of time shaded behind it.
-   * `exact` says that the points are the measurements themselves, not thinned
-   * out for drawing: then each gets a dot where they stand far enough apart.
+   * Draw the window `from` to `to`. `lines` hold for each signal its `points`
+   * ([[time, value], ...]), the `min` and `max` it is drawn between (the
+   * whole range of the signal, or of all signals of its unit on this chart,
+   * so the scale stays put from one window to the next) and `exact`: the
+   * points are the measurements themselves, not thinned out for drawing, so
+   * each gets a dot where they stand far enough apart. `breaks` are the
+   * times where the lines are interrupted and `marks` (`[{ from, to, kind
+   * }]`) stretches of time shaded behind them.
    */
-  draw(points, from, to, min, max, breaks = [], marks = [], { exact = false } = {}) {
+  draw(lines, from, to, breaks = [], marks = []) {
     this.#from = from;
     this.#to = to;
-    this.#min = min;
-    this.#max = max;
+    this.#ranges = lines.map(({ min, max }) => ({ min, max }));
     this.#marks.replaceChildren(
       ...markBoxes(marks, from, to).map(({ x, width, kind }) =>
         svg('rect', { class: `chart-mark chart-mark-${kind}`, x: x.toFixed(1), y: 0, width: Math.max(width, 2).toFixed(1), height: HEIGHT }),
       ),
     );
-    this.#line.setAttribute('d', plotPath(points, from, to, min, max, breaks));
     const room = this.#plot.clientWidth || 300;
-    const inside = points.filter(([time]) => time >= from && time <= to);
-    const spacing = room / Math.max(inside.length, 1);
-    const dots = exact && spacing >= DOT_SPACING_PX;
-    this.#dots.setAttribute('d', dots ? plotDots(inside, from, to, min, max) : '');
-    if (dots) this.#dots.style.strokeWidth = `${Math.min(DOT_PX, Math.max(2.5, spacing * 0.9)).toFixed(1)}px`;
-    this.#high.textContent = formatValue(max, min, max);
-    this.#low.textContent = max > min ? formatValue(min, min, max) : '';
+    lines.forEach(({ points, min, max, exact }, index) => {
+      const { line, dots } = this.#lines[index];
+      line.setAttribute('d', plotPath(points, from, to, min, max, breaks));
+      const inside = points.filter(([time]) => time >= from && time <= to);
+      const spacing = room / Math.max(inside.length, 1);
+      const shown = exact && spacing >= DOT_SPACING_PX;
+      dots.setAttribute('d', shown ? plotDots(inside, from, to, min, max) : '');
+      if (shown) dots.style.strokeWidth = `${Math.min(DOT_PX, Math.max(2.5, spacing * 0.9)).toFixed(1)}px`;
+    });
+    // The scale: one pair of numbers where the signals share their range, else one pair for each in its colour.
+    const shared = lines.length > 1 && lines.every(({ min, max }) => min === lines[0].min && max === lines[0].max);
+    const labels = (pick) =>
+      (shared ? [lines[0]] : lines).map((line, index) => {
+        const label = node('span', '', pick(line));
+        if (!shared && lines.length > 1) label.style.color = SERIES_COLORS[index % SERIES_COLORS.length];
+        return label;
+      });
+    this.#high.replaceChildren(...labels(({ min, max }) => formatValue(max, min, max)));
+    this.#low.replaceChildren(...labels(({ min, max }) => (max > min ? formatValue(min, min, max) : '')));
   }
 
-  /** Put the cursor at `time` and show the value there (null when there is none). */
-  cursor(time, value) {
+  /** Put the cursor at `time` and show the value of each signal there (null when it has none). */
+  cursor(time, values) {
     const x = (((time - this.#from) / (this.#to - this.#from || 1)) * WIDTH).toFixed(1);
     if (this.#cursor.getAttribute('x1') !== x) {
       this.#cursor.setAttribute('x1', x);
       this.#cursor.setAttribute('x2', x);
     }
-    const text = formatValue(value, this.#min, this.#max);
-    if (this.#value.textContent !== text) this.#value.textContent = text;
+    values.forEach((value, index) => {
+      const range = this.#ranges[index] ?? { min: 0, max: 1 };
+      const text = formatValue(value, range.min, range.max);
+      if (this.#rows[index] && this.#rows[index].textContent !== text) this.#rows[index].textContent = text;
+    });
   }
 }

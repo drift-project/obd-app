@@ -2,7 +2,7 @@
 
 import { RUNNING_RPM } from './battery.js';
 import { ELM327Error } from './elm327.js';
-import { FAST_PIDS, PIDS, SLOW_PIDS, VOLTAGE_FIELD } from './pids.js';
+import { DIAG_FIELDS, DIAG_PIDS, FAST_PIDS, PIDS, SLOW_PIDS, VOLTAGE_FIELD, diagValue } from './pids.js';
 
 export const SLOW_INTERVAL_MS = 1000;
 // With the engine running the battery voltage changes slowly. With it off the
@@ -11,6 +11,8 @@ export const VOLTAGE_INTERVAL_MS = 5000;
 // Read for drifting, the engine temperature and the voltage come this often: enough to see the
 // engine get hot, and nearly all requests are left for the wheels, the driver's foot and the revs.
 export const DRIFT_SLOW_INTERVAL_MS = 10000;
+// For diagnostics this many of the extra values are read each cycle, in turn.
+export const DIAG_PER_CYCLE = 3;
 // The driver is watching the screen, so the wait between attempts stays short.
 export const RECONNECT_MAX_MS = 8000;
 // A few seconds of "NO DATA" means ignition off or the adapter lost the bus.
@@ -37,7 +39,9 @@ export const pidList = (pids) => pids.map((pid) => pid.toString(16).toUpperCase(
  * judged by. That matters where every value is a request of its own (a
  * K-line car answers about four a second): the speed of the wheels is then
  * read twice a cycle, the driver's foot and the revs once, and of the slow
- * values only the engine temperature, every ten seconds.
+ * values only the engine temperature, every ten seconds. 'diag' reads what
+ * 'all' reads and, in turn, everything else the car reports that a scan tool
+ * shows: fuel trims, oxygen sensors, timing, the check engine light.
  */
 export class OBDPoller {
   constructor(elm, { clock = Date.now, slowIntervalMs = SLOW_INTERVAL_MS, mode = () => 'all' } = {}) {
@@ -52,12 +56,16 @@ export class OBDPoller {
     this.lastVoltage = -Infinity;
     this.hasVoltage = false;
     this.emptyPolls = 0;
+    this.diag = [];
+    this.diagIndex = 0;
   }
 
   async connect() {
     await this.elm.connect();
     this.fast = FAST_PIDS.filter((pid) => this.elm.supported.has(pid));
     this.slow = SLOW_PIDS.filter((pid) => this.elm.supported.has(pid));
+    this.diag = DIAG_PIDS.filter((pid) => this.elm.supported.has(pid));
+    this.diagIndex = 0;
     this.slowIndex = 0;
     this.lastSlow = -Infinity;
     this.lastVoltage = -Infinity;
@@ -69,6 +77,11 @@ export class OBDPoller {
   supportedFields() {
     const fields = [...this.fast, ...this.slow].map((pid) => PIDS.get(pid).name);
     return this.hasVoltage ? [...fields, VOLTAGE_FIELD] : fields;
+  }
+
+  /** The diagnostic columns the car can fill. */
+  diagFields() {
+    return DIAG_FIELDS.filter(({ pid }) => this.diag.includes(pid)).map(({ name }) => name);
   }
 
   /** What one cycle asks for where every value is a request of its own. */
@@ -91,7 +104,12 @@ export class OBDPoller {
   async poll() {
     const rows = [];
     const seen = new Map();
-    const row = (time, values, volts = null) => [Math.round(time), ...COLUMNS.map((pid) => values.get(pid) ?? null), volts];
+    const row = (time, values, volts = null) => [
+      Math.round(time),
+      ...COLUMNS.map((pid) => values.get(pid) ?? null),
+      volts,
+      ...DIAG_FIELDS.map((field) => diagValue(field, values)),
+    ];
     // Unknown until the first request with several PIDs has been answered: then it is tried, not assumed.
     const single = this.elm.multiPidWorks === false;
     // A value was sampled somewhere between its request and its answer: the middle is the best guess.
@@ -116,6 +134,12 @@ export class OBDPoller {
       this.slowIndex += 1;
       this.lastSlow = cycleStart;
       await query([pid]);
+    }
+    if (this.mode() === 'diag' && this.diag.length) {
+      for (let count = 0; count < Math.min(DIAG_PER_CYCLE, this.diag.length); count += 1) {
+        await query([this.diag[this.diagIndex % this.diag.length]]);
+        this.diagIndex += 1;
+      }
     }
     let volts = null;
     if (this.hasVoltage) {
@@ -159,7 +183,7 @@ export function abortableSleep(ms, signal) {
  * Keep an adapter session alive until `signal` aborts, reconnecting with backoff.
  * `sink(row)` gets every row, `status(info)` gets phase changes and a periodic rate.
  * `trace` (optional) records the adapter conversation and what happened to the session.
- * `mode()` is 'all' or 'drift', see OBDPoller.
+ * `mode()` is 'all', 'drift' or 'diag', see OBDPoller.
  */
 export async function run(
   makeElm,
@@ -185,6 +209,7 @@ export async function run(
     protocol: '',
     voltage: '',
     fields: [],
+    diagFields: [],
     pids: [],
     lastError: '',
     requestMs: null,
@@ -202,6 +227,7 @@ export async function run(
       protocol: stats.protocol,
       voltage: stats.voltage,
       supportedFields: stats.fields,
+      diagFields: stats.diagFields,
       supportedPids: stats.pids,
       rateHz: Math.round((rowsSinceStatus * 10000) / elapsedMs) / 10,
       requestMs: stats.requestMs,
@@ -235,6 +261,7 @@ export async function run(
         protocol: elm.protocol,
         voltage: elm.voltage,
         fields: poller.supportedFields(),
+        diagFields: poller.diagFields(),
         pids: [...elm.supported].sort((a, b) => a - b),
         requestMs: null,
       });

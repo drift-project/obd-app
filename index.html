@@ -26,6 +26,7 @@
     <button id="view-car" class="view" type="button" aria-pressed="true">Car</button>
     <button id="view-drift" class="view" type="button" aria-pressed="false">Drift</button>
     <button id="view-replay" class="view" type="button" aria-pressed="false">Replay</button>
+    <button id="view-diag" class="view" type="button" aria-pressed="false">Diag</button>
   </nav>
 
   <main>
@@ -85,8 +86,19 @@
         <details id="replay-summary" class="adapter">
           <summary>Summary of the drive</summary>
           <dl id="replay-summary-list"></dl>
+          <div class="log-actions backend">
+            <button id="replay-backend" class="button" type="button">Save for the backend</button>
+          </div>
+          <p id="replay-backend-note" class="hint">A CSV file for the team's DRIFThing backend (manage.py csvimport): time, position, speed over ground, drift angle, acceleration in g and the direction the car points, ten times a second.</p>
         </details>
       </div>
+    </section>
+
+    <section id="diag" class="diag" aria-label="Diagnostics" hidden>
+      <p id="diag-light" class="diag-light" hidden></p>
+      <p id="diag-note" class="replay-info"></p>
+      <button id="diag-read" class="button primary" type="button" hidden>Read diagnostics</button>
+      <dl id="diag-list" class="diag-list"></dl>
     </section>
 
     <section class="dash" aria-label="Live car data">
@@ -152,6 +164,7 @@
         <select id="read-mode">
           <option value="all">Everything the car has</option>
           <option value="drift">For drifting: wheels, throttle and revs more often</option>
+          <option value="diag">Diagnostics: also fuel trims, oxygen sensors, timing, faults</option>
         </select>
       </label>
     </section>

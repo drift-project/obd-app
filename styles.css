@@ -621,6 +621,71 @@ small {
   display: none;
 }
 
+/* Diagnostics view -------------------------------------------------------- */
+
+.diag {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+/* The check engine light: red when it is on. */
+.diag-light {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+  font-weight: 600;
+}
+
+.diag-light.on {
+  border-color: var(--red);
+  background: #3a0d0c;
+  color: #fff;
+}
+
+.diag-list {
+  display: grid;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel);
+}
+
+.diag-list:empty {
+  display: none;
+}
+
+.diag-list > div {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: baseline;
+  padding: 10px 14px;
+  border-top: 1px solid var(--line);
+  font-size: 0.875rem;
+}
+
+.diag-list > div:first-child {
+  border-top: 0;
+}
+
+.diag-list dt {
+  color: var(--muted);
+}
+
+.diag-list dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* Not read again for a while. */
+.diag-list .old dd {
+  color: var(--dim);
+}
+
 /* Replay view ------------------------------------------------------------- */
 
 .replay,
@@ -769,11 +834,44 @@ small {
   background: var(--panel);
 }
 
+/* One row for each signal of the chart, its swatch in the colour of its line. */
 .chart-head {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 2px 2px 0 12px;
+}
+
+.chart-swatch {
+  flex: none;
+  width: 10px;
+  height: 3px;
+  border-radius: 2px;
+}
+
+/* Another signal on this chart. */
+.chart-add {
+  flex: none;
+  width: 32px;
+  height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: 600 1.125rem/1 system-ui, sans-serif;
+  cursor: pointer;
+}
+
+.chart-pick {
+  flex: 0 1 11rem;
+  min-width: 0;
+  min-height: 32px;
+  border: 1px solid var(--blue);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.8125rem;
 }
 
 .chart-name {
@@ -866,6 +964,13 @@ small {
   font-size: 0.625rem;
   font-variant-numeric: tabular-nums;
   pointer-events: none;
+}
+
+/* With several scales the numbers of each signal stand side by side, each in its colour. */
+.chart-scale-top,
+.chart-scale-bottom {
+  display: flex;
+  gap: 3px;
 }
 
 /* Readable where the line runs behind them. */

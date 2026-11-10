@@ -2,12 +2,13 @@
 // its signals over time. The recording is the log kept in this app or files
 // saved or shared from it (CSV files, or the ZIP archive with all of them).
 
-import { SignalChart } from './chart.js';
+import { backendCsv } from './backend-export.js';
+import { SignalChart, chartRanges } from './chart.js';
 import { driftTable } from './drift-replay.js';
 import { powerTable } from './engine.js';
 import { Recording, parseCsv, skipGap, streamOf } from './replay.js';
 import { findDrifts, summarize } from './summary.js';
-import { SmoothTrack } from './track.js';
+import { trackOf } from './track.js';
 import { wheelSlip } from './wheels.js';
 import { unzip } from './zip.js';
 
@@ -61,40 +62,6 @@ const span = (ms) => `${Math.floor(ms / 60000)}:${two(Math.floor(ms / 1000) % 60
 const title = (stream) => STREAM_TITLES[stream] ?? stream;
 const rounded = (value, scale = 1) => (value === null ? '--' : String(Math.round(value * scale)));
 
-/**
- * The smoothed line through the GPS fixes of a recording. The fixes are timed by the receiver's own clock
- * (fix_ms), which spaces them evenly where their arrival may bunch up, moved onto the time line of the
- * recording by the usual delay between fix and arrival. A fix more than 50 m off is left out.
- */
-function smoothGps(recording) {
-  const { times, values: latitudes } = recording.series('gps.latitude_deg');
-  const longitudes = recording.series('gps.longitude_deg').values;
-  const exact = (id, time) => recording.value(id, time, 0);
-  const delays = [];
-  for (const time of times) {
-    const fix = exact('gps.fix_ms', time);
-    if (fix !== null && time - fix >= 0 && time - fix < 5000) delays.push(time - fix);
-  }
-  delays.sort((a, b) => a - b);
-  const delay = delays.length ? delays[Math.floor(delays.length / 2)] : null;
-  const fixes = [];
-  for (let index = 0; index < Math.min(times.length, longitudes.length); index += 1) {
-    const time = times[index];
-    if (exact('gps.accuracy_m', time) > 50) continue;
-    const fix = exact('gps.fix_ms', time);
-    fixes.push({
-      time: delay !== null && fix !== null && time - fix >= 0 && time - fix < 5000 ? fix + delay : time,
-      latitude: latitudes[index],
-      longitude: longitudes[index],
-      speed: exact('gps.speed_ms', time),
-      course: exact('gps.heading_deg', time),
-    });
-  }
-  fixes.sort((a, b) => a.time - b.time);
-  const track = new SmoothTrack(fixes);
-  return track.empty ? null : track;
-}
-
 export class ReplayView {
   #$;
   #map;
@@ -110,8 +77,8 @@ export class ReplayView {
   #windowMs = 30000;
   #lastFrame = null;
   #page = null; // the window of time the charts are drawn for
-  #panels = []; // signal ids, in the order of the charts
-  #charts = new Map();
+  #panels = []; // the charts in order, each a list of the signal ids drawn on it
+  #charts = []; // the SignalChart of each panel
   #track = [];
   #positions = null; // the stream the position comes from
   #smooth = null; // the smoothed line through the GPS fixes, where the recording has them
@@ -139,6 +106,7 @@ export class ReplayView {
     this.#fill($('replay-window'), WINDOWS, this.#windowMs);
 
     $('replay-log').addEventListener('click', () => this.openLog());
+    $('replay-backend').addEventListener('click', () => this.#saveForBackend());
     $('replay-open').addEventListener('click', () => $('replay-files').click());
     $('replay-files').addEventListener('change', (event) => {
       const files = [...event.target.files];
@@ -166,7 +134,7 @@ export class ReplayView {
     }
     seek.addEventListener('input', () => this.#seek(Number(seek.value) / Number(seek.max)));
     $('replay-add').addEventListener('change', (event) => {
-      if (event.target.value) this.#addPanel(event.target.value);
+      if (event.target.value) this.#addPanel([event.target.value]);
     });
     $('replay-examples').addEventListener('change', (event) => {
       const name = event.target.value;
@@ -286,8 +254,8 @@ export class ReplayView {
     for (const stream of recording.skipped) problems.push(`"${stream}" has no times in milliseconds in its first column`);
     const trouble = problems.length ? ` Left out: ${problems.join('; ')}.` : '';
     this.#play(false);
-    for (const chart of this.#charts.values()) chart.element.remove();
-    this.#charts.clear();
+    for (const chart of this.#charts) chart.element.remove();
+    this.#charts = [];
     this.#panels = [];
     this.#page = null;
     if (recording.empty) {
@@ -308,9 +276,15 @@ export class ReplayView {
     } catch {
       // nothing chosen yet
     }
-    const known = (Array.isArray(wanted) ? wanted : []).filter((id) => recording.has(id));
-    for (const id of known.length ? known : FIRST_SIGNALS.filter((id) => recording.has(id)).slice(0, 4)) this.#addPanel(id, false);
-    if (!this.#panels.length) this.#addPanel(recording.signals[0].id, false);
+    // Charts are kept as lists of signals; an older version kept one signal for each.
+    const known = (Array.isArray(wanted) ? wanted : [])
+      .map((panel) => (Array.isArray(panel) ? panel : [panel]).filter((id) => typeof id === 'string' && recording.has(id)))
+      .filter((panel) => panel.length);
+    const first = FIRST_SIGNALS.filter((id) => recording.has(id))
+      .slice(0, 4)
+      .map((id) => [id]);
+    for (const panel of known.length ? known : first) this.#addPanel(panel, false);
+    if (!this.#panels.length) this.#addPanel([recording.signals[0].id], false);
     this.#listSignals();
     const pauses = this.#breaks.length;
     const skipped = pauses > 0 ? `, ${pauses} pause${pauses > 1 ? 's' : ''} that the replay jumps over` : '';
@@ -387,6 +361,29 @@ export class ReplayView {
     );
   }
 
+  /** The recording in the form the team's backend imports (`manage.py csvimport`), as a download. */
+  #saveForBackend() {
+    const recording = this.#recording;
+    if (!recording) return;
+    const text = backendCsv(recording, this.#smooth, { lateMs: GPS_LATE_MS });
+    const rows = text.split('\n').length - 2;
+    if (rows <= 0) {
+      this.#text('replay-backend-note', 'Nothing to save: the backend needs a position and a drift angle, and this recording has no moment with both.');
+      return;
+    }
+    const two = (value) => String(value).padStart(2, '0');
+    const at = new Date(recording.start);
+    const name = `drifthing_backend_${at.getFullYear()}${two(at.getMonth() + 1)}${two(at.getDate())}_${two(at.getHours())}${two(at.getMinutes())}${two(at.getSeconds())}.csv`;
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(new Blob([text], { type: 'text/csv' }));
+    link.download = name;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(link.href), 10000);
+    this.#text('replay-backend-note', `Saved ${name}: ${rows} rows, ten a second.`);
+  }
+
   /** What the bands on the charts mean, for the line under them. */
   #marksText(wheels) {
     if (!wheels) return '';
@@ -412,7 +409,7 @@ export class ReplayView {
     this.#track = [];
     this.#smooth = null;
     if (!this.#positions) return;
-    if (this.#positions === 'gps') this.#smooth = smoothGps(recording);
+    if (this.#positions === 'gps') this.#smooth = trackOf(recording);
     if (this.#smooth) {
       // Each point of the line carries the drift angle of the moment the car was there, for its colour.
       this.#track = this.#smooth
@@ -435,52 +432,94 @@ export class ReplayView {
 
   // Charts ----------------------------------------------------------------------
 
-  /** The signals that have no chart yet, grouped by where they come from. */
+  /** The signals of the recording that `skip` leaves out, grouped by where they come from: `[{ label, options: [{ id, name }] }]`. */
+  #choices(skip) {
+    const groups = new Map();
+    for (const { id, stream, column } of this.#recording.signals) {
+      if (skip(id)) continue;
+      if (!groups.has(stream)) groups.set(stream, { label: title(stream), options: [] });
+      groups.get(stream).options.push({ id, name: column });
+    }
+    return [...groups.values()];
+  }
+
+  /** The signals that have no chart yet, for the list that starts a new chart. */
   #listSignals() {
     const select = this.#$('replay-add');
     const first = document.createElement('option');
     first.value = '';
     first.textContent = 'Add a signal to the charts…';
-    const groups = new Map();
-    for (const { id, stream, column } of this.#recording.signals) {
-      if (this.#panels.includes(id)) continue;
-      if (!groups.has(stream)) {
-        const group = document.createElement('optgroup');
-        group.label = title(stream);
-        groups.set(stream, group);
+    const shown = new Set(this.#panels.flat());
+    const groups = this.#choices((id) => shown.has(id)).map(({ label, options }) => {
+      const group = document.createElement('optgroup');
+      group.label = label;
+      for (const { id, name } of options) {
+        const option = document.createElement('option');
+        option.value = id;
+        option.textContent = name;
+        group.append(option);
       }
-      const option = document.createElement('option');
-      option.value = id;
-      option.textContent = column;
-      groups.get(stream).append(option);
-    }
-    select.replaceChildren(first, ...groups.values());
+      return group;
+    });
+    select.replaceChildren(first, ...groups);
     select.value = '';
-    select.disabled = groups.size === 0;
+    select.disabled = groups.length === 0;
   }
 
-  #addPanel(id, remember = true) {
-    if (this.#panels.includes(id) || !this.#recording.has(id)) return;
-    const { stream, column } = this.#recording.signals.find((signal) => signal.id === id);
+  /** The chart for a list of signals. */
+  #makeChart(ids) {
+    const signals = new Map(this.#recording.signals.map((signal) => [signal.id, signal]));
     const chart = new SignalChart({
-      name: column,
-      source: title(stream),
-      onRemove: () => this.#removePanel(id),
+      series: ids.map((id) => ({ name: signals.get(id).column, source: title(signals.get(id).stream) })),
+      onRemove: (index) => this.#removeFromPanel(chart, index),
       onSeek: (share) => {
         if (this.#page) this.#moveTo(this.#page[0] + share * (this.#page[1] - this.#page[0]));
       },
+      choices: () => this.#choices((id) => ids.includes(id)),
+      onAdd: (id) => this.#addToPanel(chart, id),
     });
-    this.#panels.push(id);
-    this.#charts.set(id, chart);
+    return chart;
+  }
+
+  #addPanel(ids, remember = true) {
+    const fresh = ids.filter((id, index) => this.#recording.has(id) && ids.indexOf(id) === index);
+    if (!fresh.length) return;
+    const chart = this.#makeChart(fresh);
+    this.#panels.push(fresh);
+    this.#charts.push(chart);
     this.#$('replay-charts').append(chart.element);
     this.#page = null;
     if (remember) this.#rememberPanels();
   }
 
-  #removePanel(id) {
-    this.#charts.get(id)?.element.remove();
-    this.#charts.delete(id);
-    this.#panels = this.#panels.filter((panel) => panel !== id);
+  /** Put the chart of panel `at` in the place of its old one, after its signals changed. */
+  #rebuild(at) {
+    const chart = this.#makeChart(this.#panels[at]);
+    this.#charts[at].element.replaceWith(chart.element);
+    this.#charts[at] = chart;
+    this.#page = null;
+    this.#rememberPanels();
+  }
+
+  #addToPanel(chart, id) {
+    const at = this.#charts.indexOf(chart);
+    if (at < 0 || this.#panels[at].includes(id) || !this.#recording.has(id)) return;
+    this.#panels[at] = [...this.#panels[at], id];
+    this.#rebuild(at);
+  }
+
+  #removeFromPanel(chart, index) {
+    const at = this.#charts.indexOf(chart);
+    if (at < 0) return;
+    const left = this.#panels[at].filter((_, place) => place !== index);
+    if (left.length) {
+      this.#panels[at] = left;
+      this.#rebuild(at);
+      return;
+    }
+    chart.element.remove();
+    this.#charts.splice(at, 1);
+    this.#panels.splice(at, 1);
     this.#rememberPanels();
   }
 
@@ -546,15 +585,20 @@ export class ReplayView {
     if (!this.#page || this.#page[0] !== from || this.#page[1] !== from + length) {
       this.#page = [from, from + length];
       const signals = new Map(recording.signals.map((signal) => [signal.id, signal]));
-      for (const [id, chart] of this.#charts) {
-        const { min, max } = signals.get(id);
-        // The measurements themselves are shown as dots on the line, where there are few enough not to be thinned out.
-        const exact = recording.count(id, from, from + length) <= POINTS_PER_CHART;
-        chart.draw(recording.points(id, from, from + length, POINTS_PER_CHART), from, from + length, min, max, this.#breaks, this.#marks, { exact });
-      }
+      this.#panels.forEach((ids, at) => {
+        const ranges = chartRanges(ids.map((id) => signals.get(id)));
+        const lines = ids.map((id, index) => ({
+          points: recording.points(id, from, from + length, POINTS_PER_CHART),
+          min: ranges[index].min,
+          max: ranges[index].max,
+          // The measurements themselves are shown as dots on the line, where there are few enough not to be thinned out.
+          exact: recording.count(id, from, from + length) <= POINTS_PER_CHART,
+        }));
+        this.#charts[at].draw(lines, from, from + length, this.#breaks, this.#marks);
+      });
       this.#text('replay-range', `${clock(from)} to ${clock(Math.min(from + length, end))}`);
     }
-    for (const [id, chart] of this.#charts) chart.cursor(time, recording.value(id, time));
+    this.#panels.forEach((ids, at) => this.#charts[at].cursor(time, ids.map((id) => recording.value(id, time))));
 
     const seek = this.#$('replay-seek');
     const place = String(Math.round(((time - start) / (end - start || 1)) * Number(seek.max)));

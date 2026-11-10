@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { formatValue, markBoxes, plotDots, plotPath } from '../src/chart.js';
+import { chartRanges, formatValue, markBoxes, plotDots, plotPath, unitOf } from '../src/chart.js';
 
 test('a value is written with the decimals its range calls for', () => {
   assert.equal(formatValue(3456.4, 700, 6500), '3456');
@@ -117,4 +117,29 @@ test('a dot is drawn at every point, at the places the line goes through', () =>
   ];
   assert.equal(plotDots(points, 1000, 2000, 0, 100), 'M0.0,94.0h0M500.0,50.0h0M1000.0,6.0h0');
   assert.equal(plotDots([], 0, 1, 0, 1), '');
+});
+
+test('signals of one unit share a scale on a chart, signals of different units keep their own', () => {
+  assert.equal(unitOf('speed_kmh'), 'kmh');
+  assert.equal(unitOf('ground_kmh'), 'kmh');
+  assert.equal(unitOf('drift_angle_deg'), 'deg');
+  assert.equal(unitOf('rpm'), 'rpm');
+  // The speed of the wheels and the speed over ground, both in km/h: one scale from the lowest to the highest.
+  assert.deepEqual(chartRanges([
+    { column: 'speed_kmh', min: 0, max: 97 },
+    { column: 'ground_kmh', min: 2, max: 72 },
+  ]), [
+    { min: 0, max: 97, shared: true },
+    { min: 0, max: 97, shared: true },
+  ]);
+  // Revs and speed: each its own.
+  assert.deepEqual(chartRanges([
+    { column: 'rpm', min: 500, max: 6500 },
+    { column: 'speed_kmh', min: 0, max: 97 },
+  ]), [
+    { min: 500, max: 6500, shared: false },
+    { min: 0, max: 97, shared: false },
+  ]);
+  // One signal alone is never called shared.
+  assert.deepEqual(chartRanges([{ column: 'speed_kmh', min: 0, max: 97 }]), [{ min: 0, max: 97, shared: false }]);
 });

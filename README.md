@@ -209,8 +209,8 @@ W symulacji z idealnymi czujnikami błąd kąta jest poniżej stopnia, z zaszumi
 
 **Widok 3D i płaski.** Mapa ma dwa widoki, przełączane przyciskiem **3D / 2D** na mapie (wybór zostaje w telefonie i jest wspólny dla widoków Drift i Replay):
 
-- **3D** (domyślny): kamera jedzie za autem i nad nim, jak kamera za autem w grach wyścigowych. Mapa jest pochylona i obrócona tak, że kierunek jazdy wskazuje w górę ekranu, a auto jest bryłą (nadwozie, kabina z szybami, koła, światła) oświetloną z góry. Kamera podąża za kierunkiem jazdy, nie za nosem auta, więc w poślizgu auto ustawia się bokiem do kamery dokładnie pod kątem driftu. Dalej przed autem mapa znika we mgle (około 100 m przy domyślnym powiększeniu).
-- **2D**: płaska mapa z północą u góry i autem na środku, jak dotąd.
+- **3D**: kamera jedzie za autem i nad nim, jak kamera za autem w grach wyścigowych. Mapa jest pochylona i obrócona tak, że kierunek jazdy wskazuje w górę ekranu, a auto jest bryłą (nadwozie, kabina z szybami, koła, światła) oświetloną z góry. Kamera podąża za kierunkiem jazdy, nie za nosem auta, więc w poślizgu auto ustawia się bokiem do kamery dokładnie pod kątem driftu. Dalej przed autem mapa znika we mgle (około 100 m przy domyślnym powiększeniu).
+- **2D** (domyślny, ze zdjęciami lotniczymi): płaska mapa z północą u góry i autem na środku.
 
 Przyciski **+** i **-** zmieniają powiększenie bieżącego widoku (każdy pamięta swoje). Zdjęcia i mapa mają najwyżej poziom 19; poziomy 20 i 21 pokazują je powiększone, co przydaje się w 3D (domyślnie 20). Auto w 3D ma rozmiar dopasowany do mapy, 1,4 raza większy od prawdziwego, żeby było dobrze widać, jak stoi. Kafelki układa i pochyla przeglądarka, a ślad i auto aplikacja maluje na nich tymi samymi rachunkami; zgodność sprawdziłem w przeglądarce co do tysięcznej piksela.
 
@@ -244,12 +244,18 @@ Co widać:
 - **Summary of the drive** (rozwijane, na dole): czas nagrania bez przerw, dystans, największa prędkość z GPS i z kół, najwyższe obroty i temperatura płynu, liczba i łączny czas driftów, największy kąt, najdłuższy drift, średnia prędkość w drifcie, łączny czas uślizgu kół.
 - **Pasy na wykresach**: czerwone tło tam, gdzie koła kręciły się szybciej, niż auto jechało, niebieskie tam, gdzie wolniej (zablokowane koła, ręczny). Pod wykresami jest ich liczba i zmierzona różnica wskazań auto/GPS. Jak to jest liczone, opisuje rozdział "Koła a GPS".
 - **Play / Pause**, tempo od ×0,25 do ×16 i suwak pozycji. Przerwy w zapisie (strona w tle, postój z rozłączonym adapterem; ponad 3 sekundy bez żadnych danych) są przeskakiwane, a ich liczba jest podana pod przyciskami.
-- **Wykresy**: każdy sygnał ma własny pasek z własną skalą (najmniejsza i największa wartość w całym nagraniu), a wszystkie paski mają wspólną oś czasu i wspólny kursor. Sygnał dodaje się z listy **Add a signal to the charts…** (wszystkie kolumny wszystkich plików, pogrupowane według źródła), a usuwa krzyżykiem. Wybór zostaje w telefonie. Dotknięcie wykresu przenosi odtwarzanie w to miejsce. Każdy pomiar jest kropką na linii (styl "-.-"), więc widać, gdzie naprawdę były odczyty, a gdzie linia je tylko łączy. Kropki pojawiają się, gdy pomiarów w oknie jest na tyle mało, że stoją co najmniej 3 piksele od siebie (dane auta i GPS przy oknie 30 s; kąt driftu, 10 razy na sekundę, przy oknie 10 s; czujniki 60 Hz dopiero przy krótszym oknie, którego nie ma). Gdzie pomiarów jest więcej, linia jest przerzedzana z zachowaniem szczytów i kropek nie ma.
+- **Wykresy**: każdy sygnał ma własny pasek z własną skalą (najmniejsza i największa wartość w całym nagraniu), a wszystkie paski mają wspólną oś czasu i wspólny kursor. Sygnał dodaje się z listy **Add a signal to the charts…** (wszystkie kolumny wszystkich plików, pogrupowane według źródła), a usuwa krzyżykiem. Przyciskiem **+** na wykresie dokłada się do niego kolejny sygnał: każdy ma swój kolor i swój wiersz z wartością nad wykresem. Sygnały o tej samej jednostce (na przykład `speed_kmh` z auta i `ground_kmh` z porównania kół z GPS) dostają wspólną skalę, więc da się je porównać wprost; sygnały o różnych jednostkach mają każdy swoją skalę, opisaną w swoim kolorze. Wybór zostaje w telefonie. Dotknięcie wykresu przenosi odtwarzanie w to miejsce. Każdy pomiar jest kropką na linii (styl "-.-"), więc widać, gdzie naprawdę były odczyty, a gdzie linia je tylko łączy. Kropki pojawiają się, gdy pomiarów w oknie jest na tyle mało, że stoją co najmniej 3 piksele od siebie (dane auta i GPS przy oknie 30 s; kąt driftu, 10 razy na sekundę, przy oknie 10 s; czujniki 60 Hz dopiero przy krótszym oknie, którego nie ma). Gdzie pomiarów jest więcej, linia jest przerzedzana z zachowaniem szczytów i kropek nie ma.
 - **Charts show** ustawia, ile czasu widać na wykresach naraz: 10 s, 30 s, 2 min, 10 min albo całe nagranie. Wykres stoi w miejscu, przesuwa się kursor; gdy dojdzie do końca okna, wykresy przechodzą do następnego. W miejscu przerwy w zapisie linia jest przerwana.
 
 Wszystkie sygnały leżą na jednej osi czasu, bo każdy plik ma `timestamp_ms` z tego samego zegara zapisu. Wartość pokazywana w danej chwili to ostatnia zmierzona przed tą chwilą. Długie sygnały (60 Hz) są na wykresie przerzedzane tak, żeby każdy szczyt i dołek został.
 
 Odtwarzanie działa w całości w telefonie, bez internetu (poza kafelkami mapy). Archiwum z godziny jazdy to kilkadziesiąt megabajtów danych w pamięci, więc bardzo długie logi lepiej oglądać na laptopie.
+
+## Tryb Diag
+
+Czwarta zakładka, **Diag**, pokazuje to, co pokazuje skaner diagnostyczny: kontrolkę silnika i liczbę zapisanych kodów błędów, stan układu paliwowego (pętla otwarta czy zamknięta i dlaczego), krótko- i długoterminowe korekty paliwa dla obu rzędów cylindrów, kąt wyprzedzenia zapłonu, napięcia sond lambda i korekty, o które proszą, powietrze wtórne, standard OBD i dystans z zapaloną kontrolką. Pokazuje tylko to, co auto zgłasza; E39 zgłasza 14 takich wartości.
+
+Te wartości są czytane tylko w trybie odczytu **Diagnostics** (przełącznik **Read from the car** albo przycisk **Read diagnostics** w zakładce). Wtedy w każdym cyklu, oprócz zwykłych wartości, czytane są po kolei trzy z nich, więc na linii K każda odświeża się co kilka sekund, a reszta odczytów zwalnia (cykl trwa około 1,7 s zamiast 0,9 s). Do jazdy w poślizgach lepiej przełączyć z powrotem. Wartość nieczytana od 30 sekund jest szara. Zapis trafia do CSV (kolumny w rozdziale Dane).
 
 ## Koła a GPS (uślizg kół)
 
@@ -270,9 +276,30 @@ Aplikacja prosi o pozycję w trybie wysokiej dokładności i bez pozycji z pami�
 
 Dokładność centymetrową i kierunek nadwozia z dwóch anten daje urządzenie zespołu (Raspberry z Unicore UM982, poprawki z ASG-EUPOS, repo `raspberry-unicore`). Najprostsze połączenie obu światów to wozić je razem z telefonem i zestawić logi po czasie; drugie to czytać zewnętrzny odbiornik po Bluetooth bezpośrednio w aplikacji, tak jak adapter OBD. Żadne z nich nie jest jeszcze zrobione.
 
+## Eksport dla backendu
+
+W widoku Replay, w rozwijanym **Summary of the drive**, przycisk **Save for the backend** zapisuje plik `drifthing_backend_RRRRMMDD_GGMMSS.csv` w formacie, który przyjmuje backend zespołu (repo `drifthing`, polecenie `csvimport`):
+
+```bash
+python manage.py csvimport --file drifthing_backend_20261110_203008.csv --commit
+```
+
+Bez `--commit` polecenie tylko sprawdza plik i wycofuje zmiany. Kolumny, dziesięć wierszy na sekundę:
+
+- `timestamp`: czas w ISO 8601, UTC (na przykład `2026-11-10T19:31:33.925Z`),
+- `location`: pozycja jako WKT `POINT(długość szerokość)` w WGS 84, z wygładzonego śladu GPS,
+- `speed_kmh`: prędkość nad ziemią z GPS,
+- `drift_angle`: kąt driftu w stopniach, ze znakiem (dodatni: nos w prawo od kierunku jazdy),
+- `acceleration_g`: przyspieszenie poziome w g (hamowanie, przyspieszanie i zakręt razem) jako zmiana prędkości zmierzonej przez GPS między sąsiednimi punktami, czyli średnia z około sekundy, niższa od chwilowych szczytów (w dołączonych przejazdach najwyżej 0,35 g),
+- `direction`: kierunek, w który wskazuje nos auta, w stopniach od północy.
+
+Wiersze są tylko tam, gdzie znany jest kąt driftu (przed pierwszą prostą i po ruszeniu telefonu go nie ma): każda kolumna backendu musi mieć wartość, a wpisane zero udawałoby jazdę prosto. Polecenie backendu tworzy nowy przejazd zawsze dla kierowcy, urządzenia i toru o numerze 1 (tak jest zapisane w jego kodzie). Format sprawdziłem tak, jak czyta go backend: Python `csv.DictReader` i odczyt WKT; na prawdziwej bazie z Django jeszcze nie.
+
 ## Dane
 
 Kolumny CSV: `timestamp_ms, rpm, speed_kmh, throttle_pct, pedal_pct, engine_load_pct, coolant_c, intake_air_c, maf_gs, map_kpa, oil_c, ambient_c, catalyst_c, battery_v`. Pierwsze dziesięć jest takie samo jak w loggerze na Raspberry. Ostatnia to napięcie akumulatora mierzone przez adapter. Pusta komórka oznacza, że auto nie obsługuje danej wartości albo nie była czytana w tym wierszu: na linii K wiersz to jedna wartość, na CAN cały cykl, w którym wolne wartości (obciążenie, temperatury) są czytane kolejno, jedna na sekundę. Do analizy w arkuszu albo w pandas puste komórki wypełnia się ostatnią znaną wartością (`ffill`).
+
+Od wersji 0.9.0 po `battery_v` są kolumny trybu Diag (rozdział niżej), puste, gdy auto nie było czytane w tym trybie: `mil_on, trouble_codes, fuel_system_1, fuel_system_2, stft_b1_pct, ltft_b1_pct, stft_b2_pct, ltft_b2_pct, timing_deg`, napięcie i korekta każdej sondy lambda (`o2_b1s1_v, o2_b1s1_trim_pct` i tak dalej do `b2s4`), `secondary_air, fuel_pressure_kpa, fuel_level_pct, barometric_kpa, run_time_s, distance_mil_km, distance_cleared_km, obd_standard`. Kolumny przed nimi zostały na swoich miejscach.
 
 Temperatury oleju (`oil_c`), powietrza na zewnątrz (`ambient_c`) i katalizatora (`catalyst_c`) są w standardzie OBD2, ale zgłaszają je głównie nowsze auta. Kafelek na ekranie pojawia się tylko wtedy, gdy auto daną wartość ma.
 
@@ -287,7 +314,7 @@ Aplikacja pyta auto, które wartości obsługuje, i czyta tylko te. Pełna lista
 - Widok 3D był sprawdzany tylko w Chrome na komputerze (w oknie o szerokości telefonu), na Demo i na dołączonych przejazdach. Na telefonie jeszcze nie: nie wiem, jak płynnie chodzi na Twoim telefonie i ile danych zużywa (przy domyślnym powiększeniu widać naraz około 10 kafelków zdjęć).
 - Widok Drift był na prawdziwej jeździe dwa razy (10.11.2026): raz w wersji 0.5.0, gdzie trafił na błąd wyboru czujnika orientacji, i raz w 0.6.0 na przejeździe z poślizgami, gdzie zadziałał. Wersja z poprawką była sprawdzana na zapisach obu jazd, nie w aucie. Kąta nie porównano dotąd z żadnym pomiarem wzorcowym.
 - Widok Replay był sprawdzany w Chrome na komputerze: na logu z pierwszej jazdy E39 (same dane auta), na czterech logach z jazd z czujnikami telefonu i na symulowanym przejeździe z pauzą. Na telefonie zgłoszono, że mapa się nie pokazała; od 0.6.2 mapa stoi w najbliższym znanym miejscu także wtedy, gdy w chwili odtwarzania nie ma pozycji, ale przyczyna tamtego zgłoszenia nie jest potwierdzona.
-- Tryb odczytu „For drifting” był sprawdzany na symulowanym aucie z linią K, w aucie jeszcze nie.
+- Tryby odczytu „For drifting” i „Diagnostics” były sprawdzane na symulowanym aucie z linią K, w aucie jeszcze nie. Wartości diagnostyczne na symulatorze ustawiłem na te, które Car Scanner pokazał dla E39.
 - Uślizg kół na żywo (kafelek Car w widoku Drift) ma tylko testy na sztucznych danych; w aucie nie był widziany.
 - Lista driftów pokazuje to, co zmierzył telefon. Przy małych prędkościach (około 20 km/h) kąt między pomiarami GPS jest najmniej pewny, więc krótkie pozycje bez uślizgu kół przy takiej prędkości mogą być błędem pomiaru.
 - Ocena akumulatora była sprawdzana na symulowanym rozruchu. Na aucie adapter łączył się dotąd przy pracującym silniku, więc widać było tylko napięcie ładowania (zwykle 14,0 V, czyli w normie), a naładowania nie.
@@ -299,13 +326,14 @@ Aplikacja pyta auto, które wartości obsługuje, i czyta tylko te. Pełna lista
 npm test
 ```
 
-Testy (Node 22, bez zależności) sprawdzają dekodowanie wartości, parsowanie odpowiedzi adaptera, sesję na symulatorze (CAN, linia K, klon odrzucający komendy, auto bez odpowiedzi, zawieszone szukanie protokołu), pętlę odczytu z ponownym łączeniem, dziennik diagnostyczny, transport Web Serial na podstawionym porcie, eksport CSV, listę plików do pracy bez serwera, service worker na podstawionym serwerze (start bez sieci, pobranie nowej wersji, wolny serwer), wybór portu adaptera, zapis czujników telefonu na podstawionych czujnikach i GPS, format próbek, archiwum ZIP (odczytywane niezależnym kodem), arytmetykę mapy, kąt driftu na symulowanych przejazdach (dowolne mocowanie telefonu, opóźniony GPS, szum czujników, przerwa w danych), ocenę akumulatora (tabele napięć, rozruch, ładowanie), zegar zapisu (skok zegara telefonu, uśpienie), odczyt archiwum ZIP, wczytanie nagrania do odtwarzania (CSV, rzadkie wiersze z linii K, przerwy, przerzedzanie, interpolacja pozycji), drogę loga od zapisu do odtworzenia, arytmetykę wykresów i pasów, wybór czujnika orientacji, liczenie kąta driftu od nowa z nagrania (kompas z zakłóceniami, telefon bez drugiej orientacji, dwie sesje w jednym logu), porównanie kół z GPS (skala licznika, opóźnienie, uślizg, zablokowane koła, ruszanie, pojedyncze odczyty), tryb odczytu do driftu, kolory śladu, wykrywanie ruszonego telefonu, listę driftów i podsumowanie, moc z przepływu powietrza, porównanie kół z GPS na żywo, wygładzony ślad przez punkty GPS (łuk, postój, brak kursu, sprzeczny kurs, przerwy), kamerę 3D (rzutowanie w obie strony, widoczny kawałek ziemi, CSS), model auta 3D (które ściany widać z której strony, kolejność rysowania, oświetlenie), kropki na wykresach, odejmowanie grawitacji od surowego akcelerometru (Android zaniżający przyspieszenie) oraz cztery dołączone przejazdy przepuszczone przez całą ścieżkę odtwarzania (z zapisanymi wynikami, żeby zmiana algorytmu nie popsuła prawdziwych danych po cichu).
+Testy (Node 22, bez zależności) sprawdzają dekodowanie wartości, parsowanie odpowiedzi adaptera, sesję na symulatorze (CAN, linia K, klon odrzucający komendy, auto bez odpowiedzi, zawieszone szukanie protokołu), pętlę odczytu z ponownym łączeniem, dziennik diagnostyczny, transport Web Serial na podstawionym porcie, eksport CSV, listę plików do pracy bez serwera, service worker na podstawionym serwerze (start bez sieci, pobranie nowej wersji, wolny serwer), wybór portu adaptera, zapis czujników telefonu na podstawionych czujnikach i GPS, format próbek, archiwum ZIP (odczytywane niezależnym kodem), arytmetykę mapy, kąt driftu na symulowanych przejazdach (dowolne mocowanie telefonu, opóźniony GPS, szum czujników, przerwa w danych), ocenę akumulatora (tabele napięć, rozruch, ładowanie), zegar zapisu (skok zegara telefonu, uśpienie), odczyt archiwum ZIP, wczytanie nagrania do odtwarzania (CSV, rzadkie wiersze z linii K, przerwy, przerzedzanie, interpolacja pozycji), drogę loga od zapisu do odtworzenia, arytmetykę wykresów i pasów, wybór czujnika orientacji, liczenie kąta driftu od nowa z nagrania (kompas z zakłóceniami, telefon bez drugiej orientacji, dwie sesje w jednym logu), porównanie kół z GPS (skala licznika, opóźnienie, uślizg, zablokowane koła, ruszanie, pojedyncze odczyty), tryb odczytu do driftu, kolory śladu, wykrywanie ruszonego telefonu, listę driftów i podsumowanie, moc z przepływu powietrza, porównanie kół z GPS na żywo, wygładzony ślad przez punkty GPS (łuk, postój, brak kursu, sprzeczny kurs, przerwy), kamerę 3D (rzutowanie w obie strony, widoczny kawałek ziemi, CSS), model auta 3D (które ściany widać z której strony, kolejność rysowania, oświetlenie), kropki na wykresach, odejmowanie grawitacji od surowego akcelerometru (Android zaniżający przyspieszenie), kilka sygnałów na jednym wykresie (wspólna i osobne skale), plik dla backendu (na dołączonym przejeździe), wartości diagnostyczne (jak je pokazuje Car Scanner) i tryb Diag oraz cztery dołączone przejazdy przepuszczone przez całą ścieżkę odtwarzania (z zapisanymi wynikami, żeby zmiana algorytmu nie popsuła prawdziwych danych po cichu).
 
 ## Pliki
 
 - `src/pids.js`, `src/elm327.js`, `src/poller.js`: protokół i pętla odczytu (przeniesione z loggera na Raspberry).
 - `src/transports.js`: połączenie przez Web Serial. `src/simulator.js`: symulowany adapter i auto.
 - `src/trace.js`: dziennik diagnostyczny rozmowy z adapterem.
+- `src/backend-export.js`: plik dla backendu zespołu.
 - `src/battery.js`: naładowanie akumulatora z napięcia i ocena ładowania. `src/engine.js`: moc z przepływu powietrza.
 - `src/summary.js`: drifty i podsumowanie nagrania. `examples/`: dołączone przejazdy i ich lista (`index.json`).
 - `src/sensors.js`: czujniki ruchu i GPS telefonu. `src/samples.js`: ich próbki i zapis do CSV.

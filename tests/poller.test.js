@@ -421,3 +421,41 @@ test('read for drifting, a CAN car keeps its fast values and of the slow ones on
   clock.now += DRIFT_SLOW_INTERVAL_MS;
   assert.notEqual(column(await pollRow(poller), 0x05), null);
 });
+
+// --- Reading for diagnostics ------------------------------------------------------------
+
+test('read for diagnostics, the extra values come in turn, three a cycle, next to the usual ones', async () => {
+  // The PIDs the E39 reported.
+  const supported = [0x01, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x18, 0x19, 0x1c, 0x21];
+  const simulator = new ELM327Simulator({ busProtocol: '3', supported, rpm: 760, rejected: ['RV'] });
+  const poller = await makeDriftPoller(simulator, { mode: () => 'diag' });
+  assert.deepEqual(poller.diagFields(), [
+    'mil_on', 'trouble_codes', 'fuel_system_1', 'fuel_system_2', 'stft_b1_pct', 'ltft_b1_pct', 'stft_b2_pct', 'ltft_b2_pct',
+    'timing_deg', 'o2_b1s1_v', 'o2_b1s1_trim_pct', 'o2_b1s2_v', 'o2_b1s2_trim_pct', 'o2_b2s1_v', 'o2_b2s1_trim_pct',
+    'o2_b2s2_v', 'o2_b2s2_trim_pct', 'secondary_air', 'distance_mil_km', 'obd_standard',
+  ]);
+  const seen = new Set();
+  for (let cycle = 0; cycle < 5; cycle += 1) {
+    const rows = await poller.poll();
+    // The fast values first, then one slow one or none, then three for diagnostics.
+    assert.deepEqual(filledNames(rows).slice(0, 3), ['rpm', 'speed_kmh', 'throttle_pct']);
+    for (const row of rows) FIELDS.forEach((name, index) => index > 0 && row[index] !== null && seen.add(name));
+  }
+  // Five cycles of three cover the fourteen diagnostic PIDs, each answer filling its columns.
+  for (const name of poller.diagFields()) {
+    if (name === 'o2_b1s2_trim_pct' || name === 'o2_b2s2_trim_pct') continue; // those sensors are not used for trim
+    assert.ok(seen.has(name), name);
+  }
+  const rows = await poller.poll();
+  const mil = rows.find((row) => row[FIELDS.indexOf('trouble_codes')] !== null);
+  if (mil) assert.equal(mil[FIELDS.indexOf('mil_on')], 0);
+});
+
+test('in the other modes nothing is read for diagnostics', async () => {
+  const simulator = new ELM327Simulator({ busProtocol: '3', supported: [0x01, 0x06, 0x0c, 0x0d, 0x11], rpm: 760, rejected: ['RV'] });
+  for (const mode of ['all', 'drift']) {
+    const poller = await makeDriftPoller(simulator, { mode: () => mode });
+    const rows = [...(await poller.poll()), ...(await poller.poll())];
+    assert.ok(rows.every((row) => row[FIELDS.indexOf('stft_b1_pct')] === null && row[FIELDS.indexOf('mil_on')] === null), mode);
+  }
+});

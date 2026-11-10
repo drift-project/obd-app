@@ -102,6 +102,47 @@ export class ELM327Simulator {
         return [14 + 40];
       case 0x3c: // catalyst, in tenths of a degree above -40
         return word((640 + 40) * 10);
+      // For diagnostics: a warm engine with no faults, much as the E39 showed.
+      case 0x01:
+        return [0x00, 0x07, 0xe5, 0x00];
+      case 0x03:
+        return [2, 2];
+      case 0x06:
+        return [128 + Math.round(3 * wave)];
+      case 0x07:
+        return [139];
+      case 0x08:
+        return [135];
+      case 0x09:
+        return [128];
+      case 0x0a:
+        return [100];
+      case 0x0e:
+        return [Math.round((12 + 6 * wave + 64) * 2)];
+      case 0x12:
+        return [4];
+      case 0x14:
+      case 0x18:
+        return [Math.round(90 + 80 * Math.sin(4 * t)), 128 + Math.round(4 * wave)];
+      case 0x15:
+      case 0x16:
+      case 0x17:
+      case 0x19:
+      case 0x1a:
+      case 0x1b:
+        return [86, 0xff];
+      case 0x1c:
+        return [6];
+      case 0x1f:
+        return word(Math.round(t));
+      case 0x21:
+        return [0, 0];
+      case 0x2f:
+        return pctByte(62);
+      case 0x31:
+        return word(4211);
+      case 0x33:
+        return [101];
       default:
         throw new RangeError(`no simulated value for PID ${hex(pid)}`);
     }

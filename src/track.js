@@ -177,6 +177,22 @@ export class SmoothTrack {
   }
 
   /**
+   * The acceleration over ground at `time` in m/s², as the change of the
+   * velocity GPS measured from the fix before to the fix after: an average
+   * over about a second, steadier than the bend of the curve. Null in a gap
+   * or outside the fixes.
+   */
+  acceleration(time) {
+    const index = this.#index(time);
+    if (index < 0 || !this.#curves[index]) return null;
+    const before = this.#velocities[index];
+    const after = this.#velocities[index + 1];
+    if (!before || !after) return null;
+    const seconds = (this.#times[index + 1] - this.#times[index]) / 1000;
+    return Math.hypot(after.east - before.east, after.north - before.north) / seconds;
+  }
+
+  /**
    * The line for drawing: `[[latitude, longitude, time], ...]` through every
    * fix with points on the curves between them about every two metres. A gap
    * between fixes is left as a straight line from one to the other. At most
@@ -224,4 +240,38 @@ export class SmoothTrack {
     }
     return out;
   }
+}
+
+/**
+ * The smoothed line through the GPS fixes of a recording. The fixes are timed by the receiver's own clock
+ * (fix_ms), which spaces them evenly where their arrival may bunch up, moved onto the time line of the
+ * recording by the usual delay between fix and arrival. A fix more than 50 m off is left out.
+ */
+export function trackOf(recording) {
+  const { times, values: latitudes } = recording.series('gps.latitude_deg');
+  const longitudes = recording.series('gps.longitude_deg').values;
+  const exact = (id, time) => recording.value(id, time, 0);
+  const delays = [];
+  for (const time of times) {
+    const fix = exact('gps.fix_ms', time);
+    if (fix !== null && time - fix >= 0 && time - fix < 5000) delays.push(time - fix);
+  }
+  delays.sort((a, b) => a - b);
+  const delay = delays.length ? delays[Math.floor(delays.length / 2)] : null;
+  const fixes = [];
+  for (let index = 0; index < Math.min(times.length, longitudes.length); index += 1) {
+    const time = times[index];
+    if (exact('gps.accuracy_m', time) > 50) continue;
+    const fix = exact('gps.fix_ms', time);
+    fixes.push({
+      time: delay !== null && fix !== null && time - fix >= 0 && time - fix < 5000 ? fix + delay : time,
+      latitude: latitudes[index],
+      longitude: longitudes[index],
+      speed: exact('gps.speed_ms', time),
+      course: exact('gps.heading_deg', time),
+    });
+  }
+  fixes.sort((a, b) => a.time - b.time);
+  const track = new SmoothTrack(fixes);
+  return track.empty ? null : track;
 }

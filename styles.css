@@ -166,6 +166,24 @@ main {
   font-size: 0.9375rem;
 }
 
+/* A new release of the app waits for the page to be loaded again. */
+.update {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+  justify-content: space-between;
+  border-color: var(--blue);
+  background: #0b2233;
+  color: #d8f0ff;
+}
+
+.update .button {
+  flex: 0 0 auto;
+  min-height: 40px;
+  padding: 8px 18px;
+}
+
 /* Something the driver has to act on now. */
 .alarm {
   margin: 0;

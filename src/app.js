@@ -19,10 +19,11 @@ import { ELM327Simulator, LoopbackTransport } from './simulator.js';
 import { RowStore, SampleStore } from './storage.js';
 import { Trace } from './trace.js';
 import { WebSerialTransport, pickPort } from './transports.js';
+import { watchUpdates } from './update.js';
 import { WheelWatch } from './wheels.js';
 import { zip } from './zip.js';
 
-const APP_VERSION = '0.9.1';
+const APP_VERSION = '0.9.2';
 const RPM_MAX = 8000;
 const REDLINE = 0.85;
 const FLUSH_MS = 1000; // a killed page loses at most about this much of the log
@@ -129,6 +130,8 @@ const state = {
   wheels: new WheelWatch(), // wheels against the ground, of the running session or the last one
   alarm: { coolant: 110, sound: true, on: false, value: null, beepAt: -Infinity },
   audio: null, // made on the first tap that starts a session: a page may only make a noise after one
+  touched: false, // whether the page was used since it was loaded
+  updateWaiting: () => false, // whether a new release waits for the page to be loaded again
 };
 
 const activeRows = () => (state.mode === 'demo' ? state.demoRows : state.rows);
@@ -1040,6 +1043,17 @@ function showNotice(text) {
   $('notice').hidden = !text;
 }
 
+/** The bar that offers a new release of the app, once one waits for the page to be loaded again. */
+function renderUpdate() {
+  const waiting = state.updateWaiting();
+  $('update').hidden = !waiting;
+  if (!waiting) return;
+  const recording = state.controller !== null;
+  const text = recording ? 'A new version of the app is ready. Reload the page when the drive is over.' : 'A new version of the app is ready.';
+  if ($('update-text').textContent !== text) $('update-text').textContent = text;
+  $('update-reload').hidden = recording;
+}
+
 function updateControls() {
   const running = state.controller !== null;
   $('connect').hidden = running;
@@ -1049,6 +1063,7 @@ function updateControls() {
   $('disconnect').textContent = state.mode === 'phone' ? 'Stop' : 'Disconnect';
   $('connect').disabled = !hasSerial;
   $('log-tag').hidden = state.mode !== 'demo';
+  renderUpdate();
   if (running) {
     $('other').hidden = true;
   } else if (hasSerial && adapterPicked()) {
@@ -1437,6 +1452,23 @@ async function init() {
   requestAnimationFrame(render);
 
   if ('serviceWorker' in navigator) {
+    // A new release reloads a page nobody has touched yet; one in use is offered it, and none in a recording.
+    for (const type of ['pointerdown', 'keydown']) {
+      addEventListener(
+        type,
+        () => {
+          state.touched = true;
+        },
+        { capture: true, once: true },
+      );
+    }
+    $('update-reload').addEventListener('click', () => location.reload());
+    state.updateWaiting = watchUpdates(navigator.serviceWorker, {
+      busy: () => state.controller !== null,
+      touched: () => state.touched,
+      reload: () => location.reload(),
+      offer: renderUpdate,
+    });
     navigator.serviceWorker.register('sw.js').catch((error) => console.warn('Offline support is off:', error));
   }
 }

@@ -41,3 +41,10 @@ test('every file in the offline cache list exists', () => {
   const absent = cachedAssets().filter((path) => path !== './' && !existsSync(new URL(path, root)));
   assert.deepEqual(absent, []);
 });
+
+test('the offline cache is named after the version of the app, so that every release reaches the phones', () => {
+  // A phone fetches a release only when sw.js has changed, and the footer shows APP_VERSION.
+  const version = /const APP_VERSION = '([^']+)';/.exec(read('src/app.js'))[1];
+  assert.match(read('sw.js'), new RegExp(`const CACHE = \`\\$\\{CACHE_PREFIX\\}${version.replaceAll('.', '\\.')}\`;`));
+  assert.equal(JSON.parse(read('package.json')).version, version);
+});

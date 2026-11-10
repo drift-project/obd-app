@@ -1,21 +1,33 @@
-// Offline support: the app starts in the car without a connection to the
-// server it was loaded from, and picks up a new version as soon as the server
-// can be reached again.
+// Offline support and updates. The app starts in the car without a connection
+// to the server it was loaded from, and every start runs the files of one
+// release: the page and the modules it imports change together from one
+// release to the next, and a mix of two can break in ways that are hard to
+// make out from a distance.
 //
-// Every request asks the server first, and a good answer replaces the stored
-// copy. The stored copy is used when the server cannot be reached, answers
-// with an error or needs longer than the timeout. A slow answer is still
-// stored, so the next start has it.
+// Each release comes with a new copy of this file, as its cache is named after
+// the version of the app (APP_VERSION in src/app.js; a test checks the two
+// agree). Only a changed copy makes the phones fetch a release: the browser
+// looks for one whenever the app is opened. The new copy stores
+// the whole app in a cache of its own and takes over only once every file has
+// arrived. Until then the release before it goes on serving its own files: a
+// slow or broken connection leaves the running release as it is, and the
+// download is tried again the next time. Once the new release has taken over,
+// the caches of older ones are removed and the open page hears of it
+// (src/update.js reloads the page or offers the new release).
 //
-// The browser's own HTTP cache is always revalidated ('no-cache'). A static
-// host may let it serve a file for minutes without asking the server, which
-// would keep an old version alive after an update.
+// The files of the app are answered from the cache of the running release,
+// without asking the server, and marked 'no-cache' for the browser. Without
+// that mark a page loaded after an update could take a module the browser
+// still holds in memory from the release before. Anything else of this site
+// (the example recordings) is asked from the server first, and a good answer
+// is stored; the stored copy is used when the server cannot be reached,
+// answers with an error or needs longer than the timeout.
 
 // Cache storage belongs to the whole origin, and a static host may serve other
 // sites from other folders of the same origin. Only caches with this prefix
 // are ever removed here.
 const CACHE_PREFIX = 'drifthing-obd-';
-const CACHE = `${CACHE_PREFIX}v14`;
+const CACHE = `${CACHE_PREFIX}0.9.2`;
 const NETWORK_TIMEOUT_MS = 2500;
 const ASSETS = [
   './',
@@ -50,6 +62,7 @@ const ASSETS = [
   'src/track.js',
   'src/transports.js',
   'src/trim.js',
+  'src/update.js',
   'src/wheels.js',
   'src/zip.js',
   'assets/logo.svg',
@@ -58,8 +71,12 @@ const ASSETS = [
   'assets/icon-512.png',
   'assets/fonts/saira-extrabold-italic.ttf',
 ];
+// The files of the app by their full address without a query: './?car=kline' is the page too.
+const APP_FILES = new Set(ASSETS.map((path) => new URL(path, self.location.href).href));
 
 self.addEventListener('install', (event) => {
+  // All or nothing: one file that cannot be fetched fails the install, and the running release stays.
+  // 'no-cache' makes the browser check every file with the server instead of trusting its HTTP cache.
   event.waitUntil(
     caches
       .open(CACHE)
@@ -77,6 +94,20 @@ self.addEventListener('activate', (event) => {
       .then(() => self.clients.claim()),
   );
 });
+
+/** A stored file of the app, marked so that the browser asks for it again at the next load. */
+function unshared(stored) {
+  const headers = new Headers(stored.headers);
+  headers.set('Cache-Control', 'no-cache');
+  return new Response(stored.body, { status: stored.status, statusText: stored.statusText, headers });
+}
+
+/** A file of the app from the running release; from the server only if the browser has dropped the stored copy. */
+async function appFile(request, url) {
+  const cache = await caches.open(CACHE);
+  const stored = await cache.match(url, { ignoreVary: true });
+  return stored ? unshared(stored) : fetch(request);
+}
 
 /** Ask the server and keep a good answer for later. */
 async function fromServer(request) {
@@ -108,6 +139,13 @@ async function answer(request, fresh) {
 self.addEventListener('fetch', (event) => {
   const { request } = event;
   if (request.method !== 'GET' || new URL(request.url).origin !== self.location.origin) return;
+  const url = new URL(request.url);
+  url.search = '';
+  url.hash = '';
+  if (APP_FILES.has(url.href)) {
+    event.respondWith(appFile(request, url.href));
+    return;
+  }
   const fresh = fromServer(request);
   // Keeps the worker alive until a slow answer has been stored.
   event.waitUntil(fresh.catch(() => {}));

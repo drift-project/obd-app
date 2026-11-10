@@ -107,6 +107,36 @@ Log jest trzymany w pamięci przeglądarki, dopóki go nie skasujesz, więc prze
 
 Strona musi być na wierzchu, z włączonym ekranem (aplikacja sama blokuje wygaszanie). W tle Chrome wstrzymuje strony i zapis staje.
 
+## Akumulator
+
+Adapter mierzy napięcie na gnieździe diagnostycznym, czyli napięcie akumulatora. Aplikacja zapisuje je w kolumnie `battery_v` (przy zgaszonym silniku w każdym wierszu, przy pracującym co 5 sekund) i w sekcji **Battery** pokazuje:
+
+- **Charge**: szacunek naładowania w procentach i w amperogodzinach, liczony z napięcia przy zgaszonym silniku.
+- **Engine off**: napięcie przed uruchomieniem silnika.
+- **While starting**: najniższe napięcie złapane podczas kręcenia rozrusznikiem. Odczyt jest mniej więcej raz na sekundę, więc najgłębszy spadek może umknąć.
+- **Engine running**: napięcie ładowania z oceną. 13,6 do 14,9 V to normalne ładowanie, 13,0 do 13,6 V słabe, poniżej 13,0 V alternator nie ładuje, powyżej 14,9 V regulator podaje za dużo.
+
+Żeby zobaczyć naładowanie, połącz adapter przy włączonym zapłonie, zanim odpalisz silnik, najlepiej po kilku godzinach postoju. Aplikacja zapamiętuje napięcie sprzed pierwszego rozruchu i nie zastępuje go późniejszymi odczytami, bo po jeździe akumulator pokazuje zawyżone napięcie. Gdy silnik już pracuje w chwili połączenia, naładowania nie da się ocenić.
+
+| Naładowanie | Zwykły akumulator | AGM |
+|---|---|---|
+| 100% | 12,60 V | 12,84 V |
+| 75% | 12,40 V | 12,54 V |
+| 50% | 12,20 V | 12,24 V |
+| 25% | 12,00 V | 11,94 V |
+| 0% | 11,80 V | 11,64 V |
+
+Wartości dla zwykłego akumulatora pochodzą z Battery Council International, dla AGM z danych firmy Trojan. Między wierszami aplikacja liczy proporcjonalnie.
+
+To szacunek, nie pomiar:
+
+- Jedna dziesiąta wolta to około 12% naładowania, a woltomierz taniego adaptera potrafi się mylić o jedną albo dwie dziesiąte. Warto raz porównać wskazanie z multimetrem na klemach i wpisać różnicę w polu **Voltmeter correction**.
+- Włączony zapłon obciąża akumulator, więc napięcie jest nieco niższe niż na prawdziwym postoju.
+- Akumulator ładowany w ostatnich godzinach pokazuje więcej, niż ma. Wiarygodny odczyt wymaga co najmniej 4 godzin postoju.
+- Napięcie nie mówi nic o zużyciu akumulatora: stary może pokazywać 100% i mieć ułamek pojemności. Trochę mówi o tym spadek napięcia przy rozruchu.
+
+Pojemność (domyślnie 100 Ah) i typ akumulatora ustawia się w tej samej sekcji; ustawienia zostają w telefonie.
+
 ## Czujniki telefonu
 
 Razem z danymi auta aplikacja zapisuje czujniki telefonu. Zapis startuje sam po **Connect adapter**. Bez adaptera uruchamia go **Record the phone sensors without the car**. W trybie Demo czujniki nie są zapisywane.
@@ -171,7 +201,7 @@ To, co widok pokazywał, zapisuje się dziesięć razy na sekundę w pliku `phon
 
 ## Dane
 
-Kolumny CSV: `timestamp_ms, rpm, speed_kmh, throttle_pct, pedal_pct, engine_load_pct, coolant_c, intake_air_c, maf_gs, map_kpa, oil_c, ambient_c, catalyst_c`. Pierwsze dziesięć jest takie samo jak w loggerze na Raspberry. Pusta komórka oznacza, że auto nie obsługuje danej wartości albo nie była czytana w tym cyklu (wartości silnika i temperatury są czytane kolejno, jedna na sekundę).
+Kolumny CSV: `timestamp_ms, rpm, speed_kmh, throttle_pct, pedal_pct, engine_load_pct, coolant_c, intake_air_c, maf_gs, map_kpa, oil_c, ambient_c, catalyst_c, battery_v`. Pierwsze dziesięć jest takie samo jak w loggerze na Raspberry. Ostatnia to napięcie akumulatora mierzone przez adapter. Pusta komórka oznacza, że auto nie obsługuje danej wartości albo nie była czytana w tym cyklu (wartości silnika i temperatury są czytane kolejno, jedna na sekundę).
 
 Temperatury oleju (`oil_c`), powietrza na zewnątrz (`ambient_c`) i katalizatora (`catalyst_c`) są w standardzie OBD2, ale zgłaszają je głównie nowsze auta. Kafelek na ekranie pojawia się tylko wtedy, gdy auto daną wartość ma.
 
@@ -184,6 +214,7 @@ Aplikacja pyta auto, które wartości obsługuje, i czyta tylko te. Pełna lista
 - Odczyt z auta przeszedł pierwszy test (10.11.2026: BMW E39, adapter Vgate Scan, telefon z Androidem). Zapis czujników telefonu był sprawdzany tylko w Chrome na komputerze, z podstawionymi czujnikami i GPS; na prawdziwym telefonie jeszcze nie.
 - Dane nie są nigdzie wysyłane. Żeby trafiały do projektu, trzeba je dopiąć do brokera MQTT (przeglądarka potrzebuje do tego MQTT po WebSocket) albo wgrywać CSV.
 - Widok Drift i wyliczanie kąta driftu były sprawdzane tylko na symulowanym przejeździe, w testach i w Chrome na komputerze.
+- Ocena akumulatora była sprawdzana na symulowanym rozruchu. Na aucie widać było dotąd tylko to, że adapter podaje napięcie (13,9 V przy pracującym silniku).
 - Hamulec i kąt skrętu kierownicy nie są standardowymi wartościami OBD2. Wymagają czytania surowych ramek konkretnego modelu auta, a w E39 protokołu BMW.
 
 ## Testy
@@ -192,13 +223,14 @@ Aplikacja pyta auto, które wartości obsługuje, i czyta tylko te. Pełna lista
 npm test
 ```
 
-Testy (Node 22, bez zależności) sprawdzają dekodowanie wartości, parsowanie odpowiedzi adaptera, sesję na symulatorze (CAN, linia K, klon odrzucający komendy, auto bez odpowiedzi, zawieszone szukanie protokołu), pętlę odczytu z ponownym łączeniem, dziennik diagnostyczny, transport Web Serial na podstawionym porcie, eksport CSV, listę plików do pracy bez serwera, service worker na podstawionym serwerze (start bez sieci, pobranie nowej wersji, wolny serwer), wybór portu adaptera, zapis czujników telefonu na podstawionych czujnikach i GPS, format próbek, archiwum ZIP (odczytywane niezależnym kodem), arytmetykę mapy oraz kąt driftu na symulowanych przejazdach (dowolne mocowanie telefonu, opóźniony GPS, szum czujników, przerwa w danych).
+Testy (Node 22, bez zależności) sprawdzają dekodowanie wartości, parsowanie odpowiedzi adaptera, sesję na symulatorze (CAN, linia K, klon odrzucający komendy, auto bez odpowiedzi, zawieszone szukanie protokołu), pętlę odczytu z ponownym łączeniem, dziennik diagnostyczny, transport Web Serial na podstawionym porcie, eksport CSV, listę plików do pracy bez serwera, service worker na podstawionym serwerze (start bez sieci, pobranie nowej wersji, wolny serwer), wybór portu adaptera, zapis czujników telefonu na podstawionych czujnikach i GPS, format próbek, archiwum ZIP (odczytywane niezależnym kodem), arytmetykę mapy, kąt driftu na symulowanych przejazdach (dowolne mocowanie telefonu, opóźniony GPS, szum czujników, przerwa w danych) oraz ocenę akumulatora (tabele napięć, rozruch, ładowanie).
 
 ## Pliki
 
 - `src/pids.js`, `src/elm327.js`, `src/poller.js`: protokół i pętla odczytu (przeniesione z loggera na Raspberry).
 - `src/transports.js`: połączenie przez Web Serial. `src/simulator.js`: symulowany adapter i auto.
 - `src/trace.js`: dziennik diagnostyczny rozmowy z adapterem.
+- `src/battery.js`: naładowanie akumulatora z napięcia i ocena ładowania.
 - `src/sensors.js`: czujniki ruchu i GPS telefonu. `src/samples.js`: ich próbki i zapis do CSV.
 - `src/drift.js`: kierunek nadwozia, kurs i kąt driftu. `src/geo.js`, `src/map.js`: mapa. `src/demo-drive.js`: przejazd dla trybu Demo.
 - `src/app.js`, `index.html`, `styles.css`: ekran. `src/storage.js`, `src/csv.js`, `src/zip.js`: log i eksport.

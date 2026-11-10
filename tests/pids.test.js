@@ -63,6 +63,8 @@ test('fields start with the Raspberry logger columns, the extra temperatures fol
     'oil_c',
     'ambient_c',
     'catalyst_c',
+    'battery_v',
   ]);
-  assert.deepEqual(FIELDS.slice(1), [...FAST_PIDS, ...SLOW_PIDS].map((pid) => PIDS.get(pid).name));
+  // Every column but the first and the last is a PID; the voltage is measured by the adapter itself.
+  assert.deepEqual(FIELDS.slice(1, -1), [...FAST_PIDS, ...SLOW_PIDS].map((pid) => PIDS.get(pid).name));
 });

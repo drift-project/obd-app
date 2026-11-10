@@ -278,6 +278,21 @@ export class ELM327 {
     return answer === '?' ? '' : answer;
   }
 
+  /**
+   * Voltage at the diagnostic socket, which is the battery's, in volts; null
+   * when the adapter cannot tell. The adapter measures it itself, so this is
+   * quick and does not count as a request to the car.
+   */
+  async readVoltage() {
+    const { requests, busyMs } = this.stats;
+    const text = await this.#ask('ATRV');
+    this.stats = { requests, busyMs };
+    const volts = Number.parseFloat(text);
+    if (!Number.isFinite(volts) || volts < 4 || volts > 36) return null;
+    this.voltage = text;
+    return volts;
+  }
+
   /** Find a protocol the car answers on and read which PIDs it supports. */
   async #findCar() {
     const preferred = PROTOCOL_NAMES[this.preferredProtocol] ? [this.preferredProtocol] : [];

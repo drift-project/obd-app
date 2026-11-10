@@ -109,6 +109,7 @@
           <div class="tile" data-field="engine_load_pct"><dt>Load</dt><dd><span data-value="engine_load_pct">--</span><small>%</small></dd></div>
           <div class="tile" data-field="maf_gs"><dt>Air flow</dt><dd><span data-value="maf_gs">--</span><small>g/s</small></dd></div>
           <div class="tile" data-field="map_kpa"><dt>Manifold</dt><dd><span data-value="map_kpa">--</span><small>kPa</small></dd></div>
+          <div class="tile optional" data-field="battery_v" hidden><dt>Battery</dt><dd><span data-value="battery_v">--</span><small>V</small></dd></div>
           <div class="tile optional" data-field="oil_c" hidden><dt>Oil</dt><dd><span data-value="oil_c">--</span><small>°C</small></dd></div>
           <div class="tile optional" data-field="ambient_c" hidden><dt>Outside air</dt><dd><span data-value="ambient_c">--</span><small>°C</small></dd></div>
           <div class="tile optional" data-field="catalyst_c" hidden><dt>Catalyst</dt><dd><span data-value="catalyst_c">--</span><small>°C</small></dd></div>
@@ -140,6 +141,22 @@
     <details id="phone" class="adapter">
       <summary>Phone sensors</summary>
       <dl id="phone-list"></dl>
+    </details>
+
+    <details id="battery" class="adapter">
+      <summary>Battery</summary>
+      <dl>
+        <div><dt>Charge</dt><dd id="battery-charge">--</dd></div>
+        <div><dt>Engine off</dt><dd id="battery-rest">--</dd></div>
+        <div><dt>While starting</dt><dd id="battery-start">--</dd></div>
+        <div><dt>Engine running</dt><dd id="battery-charging">--</dd></div>
+      </dl>
+      <div class="settings">
+        <label>Capacity <span><input id="battery-capacity" type="number" inputmode="numeric" min="10" max="400" step="5" value="100"> Ah</span></label>
+        <label>Type <select id="battery-type"><option value="flooded">Standard</option><option value="agm">AGM</option></select></label>
+        <label>Voltmeter correction <span><input id="battery-correction" type="number" inputmode="decimal" min="-1" max="1" step="0.05" value="0"> V</span></label>
+      </div>
+      <p class="hint">An estimate from the voltage. For the charge, connect before starting the engine, best after the car has stood for a few hours. A tenth of a volt is about twelve percent, and a cheap adapter can be off by that much: compare it with a voltmeter once and enter the difference as the correction.</p>
     </details>
 
     <details class="adapter">

@@ -90,7 +90,7 @@ test('run reconnects after a failed adapter and reports rows', async () => {
   assert.equal(failed.lastError, 'cannot open the adapter link: adapter out of range');
   const live = statuses.filter((info) => info.phase === 'connected');
   assert.ok(live.length > 0 && live.every((info) => info.adapterConnected));
-  assert.deepEqual(live[0].supportedFields, [...FAST_PIDS, ...SLOW_PIDS].map((pid) => PIDS.get(pid).name));
+  assert.deepEqual(live[0].supportedFields, [...[...FAST_PIDS, ...SLOW_PIDS].map((pid) => PIDS.get(pid).name), 'battery_v']);
   const last = statuses.at(-1);
   assert.equal(last.phase, 'idle');
   assert.equal(last.rows, 12);
@@ -229,7 +229,69 @@ test('everything the car reports is listed, not only what the app reads', async 
   });
   const live = statuses.find((info) => info.phase === 'connected');
   assert.deepEqual(live.supportedPids, car);
-  assert.deepEqual(live.supportedFields, ['rpm', 'speed_kmh', 'throttle_pct', 'engine_load_pct', 'coolant_c', 'intake_air_c', 'maf_gs']);
+  assert.deepEqual(live.supportedFields, ['rpm', 'speed_kmh', 'throttle_pct', 'engine_load_pct', 'coolant_c', 'intake_air_c', 'maf_gs', 'battery_v']);
   const note = trace.lines().map(withoutTime).find((line) => line.includes('mode 01 PIDs'));
   assert.equal(note, '# the car reports 9 mode 01 PIDs: 04 05 06 0C 0D 0E 0F 10 11');
+});
+
+// --- Battery voltage ---------------------------------------------------------------
+
+const voltage = (row) => row[FIELDS.indexOf('battery_v')];
+const voltageRequests = (simulator) => simulator.requests.filter((request) => request === 'ATRV').length;
+
+test('with the engine off the battery voltage is read on every row', async () => {
+  const simulator = new ELM327Simulator({ rpm: 0, voltage: 12.4 });
+  const clock = fakeClock();
+  const poller = await makePoller({ simulator, clock });
+  const before = voltageRequests(simulator);
+  const rows = [];
+  for (let i = 0; i < 4; i += 1) {
+    rows.push(await poller.poll());
+    clock.now += 800;
+  }
+  assert.deepEqual(rows.map(voltage), [12.4, 12.4, 12.4, 12.4]);
+  assert.equal(voltageRequests(simulator) - before, 4);
+  assert.ok(poller.supportedFields().includes('battery_v'));
+});
+
+test('with the engine running the battery voltage is read every few seconds', async () => {
+  const simulator = new ELM327Simulator({ rpm: 850, voltage: 14.1 });
+  const clock = fakeClock();
+  const poller = await makePoller({ simulator, clock });
+  const rows = [];
+  for (let i = 0; i < 12; i += 1) {
+    rows.push(await poller.poll());
+    clock.now += 1000;
+  }
+  // The first row and then one every five seconds.
+  assert.deepEqual(rows.map(voltage), [14.1, null, null, null, null, 14.1, null, null, null, null, 14.1, null]);
+});
+
+test('reading the voltage does not count as a request to the car', async () => {
+  const simulator = new ELM327Simulator({ rpm: 0 });
+  const poller = await makePoller({ simulator });
+  const requests = poller.elm.stats.requests;
+  assert.equal(await poller.elm.readVoltage(), 12.6);
+  assert.equal(poller.elm.stats.requests, requests);
+  assert.equal(poller.elm.voltage, '12.6V');
+});
+
+test('an adapter that cannot tell its voltage is not asked for it again', async () => {
+  const simulator = new ELM327Simulator({ rejected: ['RV'], rpm: 0 });
+  const poller = await makePoller({ simulator });
+  const before = voltageRequests(simulator);
+  const row = await poller.poll();
+  assert.equal(voltage(row), null);
+  assert.equal(voltageRequests(simulator), before);
+  assert.equal(poller.supportedFields().includes('battery_v'), false);
+});
+
+test('a voltage that makes no sense is left out', async () => {
+  let reading = 12.5;
+  const simulator = new ELM327Simulator({ rpm: 0, voltage: () => reading });
+  const poller = await makePoller({ simulator });
+  reading = 0.3;
+  assert.equal(voltage(await poller.poll()), null);
+  reading = 12.3;
+  assert.equal(voltage(await poller.poll()), 12.3);
 });

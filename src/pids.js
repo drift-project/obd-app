@@ -33,9 +33,12 @@ export const FAST_PIDS = [0x0c, 0x0d, 0x11, 0x49];
 // Polled one at a time, round robin, at most once per slow interval.
 export const SLOW_PIDS = [0x04, 0x05, 0x0f, 0x10, 0x0b, 0x5c, 0x46, 0x3c];
 
+// The supply voltage is not a PID: the adapter measures it itself.
+export const VOLTAGE_FIELD = 'battery_v';
+
 // Fixed column order of logged rows. A value is null when the car does not
 // support the PID or it was not polled in that cycle.
-export const FIELDS = ['timestamp_ms', ...[...FAST_PIDS, ...SLOW_PIDS].map((pid) => PIDS.get(pid).name)];
+export const FIELDS = ['timestamp_ms', ...[...FAST_PIDS, ...SLOW_PIDS].map((pid) => PIDS.get(pid).name), VOLTAGE_FIELD];
 
 /** Number of data bytes the car sends back for a mode 01 PID (undefined if unknown). */
 export function responseLength(pid) {

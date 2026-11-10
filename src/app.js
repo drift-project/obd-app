@@ -1,6 +1,7 @@
 // DRIFThing OBD: live dashboard and logger for an ELM327 adapter over Web Serial,
 // with the motion sensors and the GPS of the phone recorded next to the car data.
 
+import { BatteryMonitor, chargePercent, chargingVerdict } from './battery.js';
 import { fileName, toCsv } from './csv.js';
 import { DEMO_START, demoDrive, demoPhone } from './demo-drive.js';
 import { DRIFT_STREAM, DriftEstimator } from './drift.js';
@@ -17,7 +18,7 @@ import { Trace } from './trace.js';
 import { WebSerialTransport, pickPort } from './transports.js';
 import { zip } from './zip.js';
 
-const APP_VERSION = '0.4.1';
+const APP_VERSION = '0.5.0';
 const RPM_MAX = 8000;
 const REDLINE = 0.85;
 const FLUSH_MS = 1000; // a killed page loses at most about this much of the log
@@ -28,6 +29,7 @@ const TRACE_KEY = 'drifthing-obd-trace';
 const PROTOCOL_KEY = 'drifthing-obd-protocol';
 const ADAPTER_KEY = 'drifthing-obd-adapter-picked'; // '1' once an adapter was picked in the chooser
 const VIEW_KEY = 'drifthing-obd-view';
+const BATTERY_KEY = 'drifthing-obd-battery'; // capacity, type and voltmeter correction as JSON
 const ZOOM_KEY = 'drifthing-obd-map-zoom';
 const DRIFT_LOG_MS = 100; // the drift stream is written ten times a second
 
@@ -37,14 +39,18 @@ const LOG_STREAMS = [...STREAMS, DRIFT_STREAM];
 // What the Demo button simulates. "?car=kline" in the address shows an old
 // K-line car (one value per request, slow), "?car=silent" a car that never answers.
 const DEMO_CARS = {
-  can: { car: {}, latencyMs: 40 },
-  kline: { car: { busProtocol: '3', supported: [0x04, 0x05, 0x0c, 0x0d, 0x0f, 0x10, 0x11] }, latencyMs: 140 },
+  can: { car: { voltage: 14.1 }, latencyMs: 40 },
+  kline: { car: { busProtocol: '3', supported: [0x04, 0x05, 0x0c, 0x0d, 0x0f, 0x10, 0x11], voltage: 14.1 }, latencyMs: 140 },
   silent: { car: { busProtocol: null }, latencyMs: 300 },
 };
 
 const FORMAT = {
   maf_gs: (value) => value.toFixed(1),
+  battery_v: (value) => value.toFixed(1),
 };
+
+const RPM_FIELD = FIELDS.indexOf('rpm');
+const VOLTAGE_COLUMN = FIELDS.indexOf('battery_v');
 
 const $ = (id) => document.getElementById(id);
 const hasSerial = 'serial' in navigator;
@@ -60,6 +66,9 @@ const state = {
   savedRows: 0, // how many car rows were already exported
   latest: new Map(),
   latestAt: new Map(), // when each car value last arrived, on the page clock
+  battery: new BatteryMonitor(), // of the running session, or of the last one
+  batterySettings: { capacity: 100, type: 'flooded', correction: 0 },
+  batteryNoted: '', // what the diagnostic log was last told about the battery
   info: null, // status of the running session, or of the last one
   carInfo: null, // status of the last session with a real adapter
   progress: '', // what the connection attempt is doing right now
@@ -335,6 +344,84 @@ function stopSensors() {
   activeTrace().note(`phone sensors stopped, ${count.format(state.samples.total)} samples in the log${clocks}`);
 }
 
+// --- Battery ---------------------------------------------------------------------
+
+const CHARGING_TEXT = {
+  normal: 'charging normally',
+  weak: 'charging weakly: much is switched on at idle, or the battery is very low',
+  'not charging': 'not charging: the alternator or its belt',
+  'too high': 'too high: the voltage regulator',
+};
+
+function loadBatterySettings() {
+  try {
+    const saved = JSON.parse(readStored(BATTERY_KEY)) ?? {};
+    const settings = state.batterySettings;
+    if (saved.capacity >= 10 && saved.capacity <= 400) settings.capacity = saved.capacity;
+    if (saved.type === 'agm' || saved.type === 'flooded') settings.type = saved.type;
+    if (Math.abs(saved.correction) <= 1) settings.correction = saved.correction;
+  } catch {
+    // Nothing saved yet, or a damaged copy: the defaults stay.
+  }
+  $('battery-capacity').value = state.batterySettings.capacity;
+  $('battery-type').value = state.batterySettings.type;
+  $('battery-correction').value = state.batterySettings.correction;
+}
+
+function saveBatterySettings() {
+  const capacity = Number($('battery-capacity').value);
+  const correction = Number($('battery-correction').value);
+  const settings = state.batterySettings;
+  if (capacity >= 10 && capacity <= 400) settings.capacity = capacity;
+  if (Number.isFinite(correction) && Math.abs(correction) <= 1) settings.correction = correction;
+  settings.type = $('battery-type').value === 'agm' ? 'agm' : 'flooded';
+  writeStored(BATTERY_KEY, JSON.stringify(settings));
+  state.dirty = true;
+}
+
+const voltsText = (volts) => `${volts.toFixed(1)} V`;
+
+/** What the battery has shown in this session, as the lines of the Battery panel. */
+function batteryLines() {
+  const { capacity, type, correction } = state.batterySettings;
+  const seen = state.battery.summary();
+  const rest = seen.rest ? seen.rest.volts + correction : null;
+  const percent = chargePercent(rest, type);
+  const lines = { charge: '--', rest: '--', start: '--', charging: '--' };
+  if (rest !== null) {
+    lines.rest = voltsText(rest);
+    const about = `about ${Math.round(percent)}%, ${Math.round((percent * capacity) / 100)} of ${capacity} Ah`;
+    lines.charge = seen.rest.afterDriving ? `${about}, but measured after the engine ran, so it reads high` : about;
+  } else if (seen.running) {
+    lines.charge = 'not known: the engine was already running. Connect before starting it.';
+  }
+  if (seen.starting !== null) lines.start = `${voltsText(seen.starting + correction)} at the lowest reading`;
+  if (seen.charging !== null) {
+    const volts = seen.charging + correction;
+    lines.charging = `${voltsText(volts)}, ${CHARGING_TEXT[chargingVerdict(volts)]}`;
+  } else if (seen.running) {
+    lines.charging = 'settling after the start…';
+  }
+  return lines;
+}
+
+const batteryReport = () => {
+  const lines = batteryLines();
+  return `charge ${lines.charge}; engine off ${lines.rest}; while starting ${lines.start}; engine running ${lines.charging}`;
+};
+
+/** A reading of the battery voltage from the car; the diagnostic log is told when the picture changes. */
+function onVoltage(time, volts, rpm) {
+  state.battery.add(time, volts, typeof rpm === 'number' ? rpm : null);
+  if (state.mode !== 'serial') return;
+  const seen = state.battery.summary();
+  // Told once the engine is off with a reading, and again once charging has been judged.
+  const stage = seen.charging !== null ? 'charging' : seen.rest && !seen.running ? 'rest' : '';
+  if (!stage || stage === state.batteryNoted) return;
+  state.batteryNoted = stage;
+  state.trace.note(`battery: ${batteryReport()}`);
+}
+
 // --- Session ---------------------------------------------------------------------
 
 function sink(row) {
@@ -342,10 +429,11 @@ function sink(row) {
   if (state.mode === 'serial') state.pending.push(row);
   const now = performance.now();
   for (let i = 1; i < FIELDS.length; i += 1) {
-    if (row[i] === null) continue;
+    if (row[i] === null || row[i] === undefined) continue;
     state.latest.set(FIELDS[i], row[i]);
     state.latestAt.set(FIELDS[i], now);
   }
+  if (typeof row[VOLTAGE_COLUMN] === 'number') onVoltage(row[0], row[VOLTAGE_COLUMN], row[RPM_FIELD]);
   state.dirty = true;
 }
 
@@ -411,6 +499,8 @@ function start(mode, makeElm = null) {
   keepAwake(true);
   state.drift = new DriftEstimator();
   state.attitudeFrom = null;
+  state.battery = new BatteryMonitor();
+  state.batteryNoted = '';
   // The demo car is made up, so nothing real is recorded next to it: it brings its own drive.
   if (mode === 'demo') startDemoDrive();
   else startSensors();
@@ -697,6 +787,7 @@ function reportText() {
     `Request time: ${info?.requestMs ? `${info.requestMs} ms` : 'unknown'}`,
     `Rows in the log: ${activeRows().length}`,
     `Phone sensors: ${demo ? 'not recorded in the demo' : sensorSummary()}`,
+    `Battery: ${batteryReport()}`,
     `Problems: ${info?.errors ?? 0}${info?.lastError ? `, last: ${info.lastError}` : ''}`,
     '',
     'Conversation with the adapter, newest last (> sent, < received, # note, ! problem):',
@@ -832,6 +923,14 @@ function renderLog() {
   if (empty && state.clearTimer) disarmClear();
 }
 
+function renderBattery() {
+  const lines = batteryLines();
+  $('battery-charge').textContent = lines.charge;
+  $('battery-rest').textContent = lines.rest;
+  $('battery-start').textContent = lines.start;
+  $('battery-charging').textContent = lines.charging;
+}
+
 function renderPhone() {
   for (const stream of sensorStates()) $(`phone-${stream.name}`).textContent = streamText(stream);
   const kmh = gpsSpeedKmh();
@@ -907,6 +1006,7 @@ function render() {
     renderInfo();
     renderLog();
     renderPhone();
+    renderBattery();
   }
   if (state.view === 'drift') renderDrift();
   renderTrace();
@@ -939,6 +1039,8 @@ async function init() {
   $('zoom-in').addEventListener('click', () => zoomMap(1));
   $('zoom-out').addEventListener('click', () => zoomMap(-1));
   showView(readStored(VIEW_KEY));
+  loadBatterySettings();
+  for (const id of ['battery-capacity', 'battery-type', 'battery-correction']) $(id).addEventListener('change', saveBatterySettings);
   $('connect').addEventListener('click', () => connect());
   $('other').addEventListener('click', () => connect({ choose: true }));
   $('demo').addEventListener('click', startDemo);

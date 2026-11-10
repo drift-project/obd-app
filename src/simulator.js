@@ -26,7 +26,10 @@ const nextTask = () =>
  * search miss the car, as some adapters do on K-line cars. `searchHangs` makes
  * the automatic search print no prompt until it is interrupted. `rejected`
  * lists AT commands (without "AT") a clone answers with "?". `gearbox` lists
- * PIDs of a second ECU that answers before the engine.
+ * PIDs of a second ECU that answers before the engine. `voltage` is what the
+ * adapter measures at the socket: a number of volts or a function giving one.
+ * `rpm` fixes the engine speed (0 is an engine that is off) instead of the
+ * drift run.
  */
 export class ELM327Simulator {
   constructor({
@@ -39,6 +42,8 @@ export class ELM327Simulator {
     searchHangs = false,
     rejected = [],
     gearbox = null,
+    voltage = 12.6,
+    rpm = null,
     clock = () => performance.now() / 1000,
   } = {}) {
     this.supported = new Set(supported ?? PIDS.keys());
@@ -50,6 +55,8 @@ export class ELM327Simulator {
     this.searchHangs = searchHangs;
     this.rejected = new Set(rejected);
     this.gearbox = gearbox ? new Set(gearbox) : null;
+    this.voltage = voltage;
+    this.rpm = rpm;
     this.clock = clock;
     this.start = clock();
     this.requests = [];
@@ -72,7 +79,7 @@ export class ELM327Simulator {
     const wave = Math.sin(1.1 * t);
     switch (pid) {
       case 0x0c: // rpm, oscillating like throttle steering in a drift
-        return word(Math.round((5200 + 1300 * wave) * 4));
+        return word(Math.round((this.rpm ?? 5200 + 1300 * wave) * 4));
       case 0x0d:
         return [Math.round(45 + 12 * Math.sin(0.4 * t))];
       case 0x11:
@@ -159,7 +166,7 @@ export class ELM327Simulator {
       if (this.selected !== '0') return this.selected;
       return `A${this.connected ? this.busProtocol : '0'}`;
     }
-    if (command === 'RV') return '12.6V';
+    if (command === 'RV') return `${Number(typeof this.voltage === 'function' ? this.voltage() : this.voltage).toFixed(1)}V`;
     return '?';
   }
 

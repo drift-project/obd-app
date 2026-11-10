@@ -1,9 +1,13 @@
 // Polling loop on top of the ELM327 driver (port of obd_main.py from raspberry-unicore).
 
+import { RUNNING_RPM } from './battery.js';
 import { ELM327Error } from './elm327.js';
-import { FAST_PIDS, PIDS, SLOW_PIDS } from './pids.js';
+import { FAST_PIDS, PIDS, SLOW_PIDS, VOLTAGE_FIELD } from './pids.js';
 
 export const SLOW_INTERVAL_MS = 1000;
+// With the engine running the battery voltage changes slowly. With it off the
+// voltage is read on every row, so the sag under the starter is not missed.
+export const VOLTAGE_INTERVAL_MS = 5000;
 // The driver is watching the screen, so the wait between attempts stays short.
 export const RECONNECT_MAX_MS = 8000;
 // A few seconds of "NO DATA" means ignition off or the adapter lost the bus.
@@ -27,6 +31,8 @@ export class OBDPoller {
     this.slow = [];
     this.slowIndex = 0;
     this.lastSlow = -Infinity;
+    this.lastVoltage = -Infinity;
+    this.hasVoltage = false;
     this.emptyPolls = 0;
   }
 
@@ -36,11 +42,15 @@ export class OBDPoller {
     this.slow = SLOW_PIDS.filter((pid) => this.elm.supported.has(pid));
     this.slowIndex = 0;
     this.lastSlow = -Infinity;
+    this.lastVoltage = -Infinity;
+    // An adapter that could not tell its voltage while connecting is not asked again.
+    this.hasVoltage = Boolean(this.elm.voltage);
     this.emptyPolls = 0;
   }
 
   supportedFields() {
-    return [...this.fast, ...this.slow].map((pid) => PIDS.get(pid).name);
+    const fields = [...this.fast, ...this.slow].map((pid) => PIDS.get(pid).name);
+    return this.hasVoltage ? [...fields, VOLTAGE_FIELD] : fields;
   }
 
   /** Read one row: [timestamp_ms, value per column in FIELDS order (null if missing)]. */
@@ -53,6 +63,15 @@ export class OBDPoller {
       this.lastSlow = start;
       for (const [key, value] of await this.elm.query([pid])) values.set(key, value);
     }
+    let volts = null;
+    if (this.hasVoltage) {
+      const rpm = values.get(0x0c);
+      const interval = rpm !== undefined && rpm >= RUNNING_RPM ? VOLTAGE_INTERVAL_MS : 0;
+      if (start - this.lastVoltage >= interval) {
+        this.lastVoltage = start;
+        volts = await this.elm.readVoltage();
+      }
+    }
     const end = this.clock();
     this.emptyPolls = values.size ? 0 : this.emptyPolls + 1;
     if (this.emptyPolls >= MAX_EMPTY_POLLS) {
@@ -60,7 +79,7 @@ export class OBDPoller {
     }
     // Middle of the request: the values were sampled somewhere in between.
     const timestampMs = Math.round((start + end) / 2);
-    return [timestampMs, ...COLUMNS.map((pid) => values.get(pid) ?? null)];
+    return [timestampMs, ...COLUMNS.map((pid) => values.get(pid) ?? null), volts];
   }
 }
 
@@ -189,6 +208,7 @@ export async function run(
         summaryRows += 1;
         polls += 1;
         stats.requestMs = requestMs();
+        stats.voltage = elm.voltage;
         if (trace && polls === QUIET_AFTER_POLLS) {
           trace.note('polling is steady: from here only problems are logged, with the exchanges before them');
           trace.quiet = true;

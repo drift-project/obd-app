@@ -712,6 +712,44 @@ summary:focus-visible {
   text-align: center;
 }
 
+/* Settings inside a details panel ----------------------------------------- */
+
+.settings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  padding: 0 14px 12px;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.settings label {
+  display: grid;
+  gap: 4px;
+}
+
+.settings input,
+.settings select {
+  min-height: 40px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+}
+
+.settings input {
+  width: 5.5rem;
+}
+
+.hint {
+  margin: 0;
+  padding: 0 14px 14px;
+  color: var(--dim);
+  font-size: 0.8125rem;
+}
+
 /* Wide screens and phones mounted sideways -------------------------------- */
 
 @media (min-width: 700px) {

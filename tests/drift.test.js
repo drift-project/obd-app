@@ -338,6 +338,47 @@ test('speed and position are carried on between the fixes', () => {
   assert.ok(worstPlace < 0.5, `place off by ${worstPlace.toFixed(2)} m`);
 });
 
+test('the acceleration of the car is told along and across where it points', (t) => {
+  // What really happened over the same quarter of a second, turned into the car: ahead and to its right.
+  const velocity = (time) => {
+    const before = demoDrive(time - 0.01);
+    const after = demoDrive(time + 0.01);
+    return { east: (after.east - before.east) / 0.02, north: (after.north - before.north) / 0.02 };
+  };
+  let worst = 0;
+  let strongest = 0;
+  let braking = 0;
+  ride(new DriftEstimator(), demoDrive, {
+    to: 60,
+    frame: 137,
+    raw: true,
+    each: (time, shown, truth) => {
+      if (time < 14) return;
+      assert.notEqual(shown.ahead, null, `no acceleration at ${time.toFixed(2)} s`);
+      const now = velocity(time);
+      const then = velocity(time - 0.25);
+      const east = (now.east - then.east) / 0.25;
+      const north = (now.north - then.north) / 0.25;
+      const sin = Math.sin(truth.heading * RADIANS);
+      const cos = Math.cos(truth.heading * RADIANS);
+      const ahead = east * sin + north * cos;
+      const right = east * cos - north * sin;
+      worst = Math.max(worst, Math.hypot(shown.ahead - ahead, shown.right - right));
+      strongest = Math.max(strongest, Math.hypot(ahead, right));
+      braking = Math.min(braking, ahead);
+    },
+  });
+  t.diagnostic(`off by ${worst.toFixed(2)} m/s2 at worst, the strongest ${strongest.toFixed(1)} m/s2, braking down to ${braking.toFixed(1)} m/s2`);
+  assert.ok(strongest > 3, 'the demo drive pulls hard enough to tell');
+  assert.ok(worst < 0.3, `acceleration off by ${worst.toFixed(2)} m/s2`);
+});
+
+test('the acceleration of the car is unknown until the accelerometer is lined up with the map', () => {
+  const estimator = ride(new DriftEstimator(), demoDrive, { to: 3, frame: 137 });
+  assert.equal(estimator.at(3000).ahead, null);
+  assert.equal(estimator.at(3000).right, null);
+});
+
 test('the driven line gets points between the fixes that follow the corner', () => {
   const estimator = ride(new DriftEstimator(), demoDrive, { to: 40, frame: 20 });
   const line = estimator.path;

@@ -71,6 +71,8 @@ export function driftTable(recording) {
       seen.corrected ? 1 : 0,
       seen.aided ? 1 : 0,
       seen.gpsDelay ?? NaN,
+      seen.ahead ?? NaN,
+      seen.right ?? NaN,
     );
   };
 

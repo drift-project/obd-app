@@ -147,8 +147,10 @@ body {
 
 /* Layout ------------------------------------------------------------------ */
 
+/* One column as wide as the screen: a long line in a list must not push the page wider than a phone. */
 main {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
   width: 100%;
   max-width: 980px;
@@ -754,14 +756,18 @@ small {
 /* What the requests to the car are spent on. */
 .read-mode {
   flex: 1 0 100%;
+  min-width: 0;
   display: grid;
   gap: 4px;
   color: var(--muted);
   font-size: 0.8125rem;
 }
 
+/* A list is as wide as its place, not as its longest choice, which it cuts short. */
 .read-mode select,
 .replay select {
+  min-width: 0;
+  max-width: 100%;
   min-height: 48px;
   padding: 6px 10px;
   border: 1px solid var(--line);
@@ -836,6 +842,77 @@ small {
 
 .drift-list span:last-child {
   color: var(--muted);
+}
+
+/* The g-g diagram: a square as wide as a phone allows, centred on wider screens. */
+.grip {
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  padding: 0 14px 10px;
+}
+
+.grip-plot {
+  display: block;
+  width: 100%;
+  max-width: 360px;
+  aspect-ratio: 1;
+  overflow: visible;
+}
+
+.grip-ring {
+  fill: none;
+  stroke: var(--line);
+  stroke-width: 1.2;
+}
+
+.grip-axis {
+  stroke: var(--line);
+  stroke-width: 1;
+}
+
+.grip-label {
+  fill: var(--muted);
+  font: 11px system-ui, sans-serif;
+}
+
+.grip-scale {
+  fill: var(--dim);
+  font: 10px system-ui, sans-serif;
+}
+
+.grip-dots path {
+  fill: none;
+  stroke-width: 4.5;
+  stroke-linecap: round;
+  opacity: 0.75;
+}
+
+.grip-tail {
+  fill: none;
+  stroke: var(--text);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.7;
+}
+
+.grip-now {
+  stroke: #fff;
+  stroke-width: 2.5;
+}
+
+.grip-readout,
+.grip-most {
+  margin: 0;
+  font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.grip-most {
+  color: var(--muted);
+  font-size: 0.8125rem;
 }
 
 /* One strip per signal, all over the same stretch of time. */

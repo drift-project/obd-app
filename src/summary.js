@@ -14,15 +14,33 @@ const GAP_MS = 500; // a longer silence of the drift angle ends a drift
 const WHEEL_LAG_MS = 800; // the car's speed arrives late, so its readings are looked for a little past the drift
 const GPS_GAP_MS = 3000;
 
+const G = 9.80665;
+
 const speedAt = (recording, time) => recording.value('drift.speed_ms', time, 1500) ?? recording.value('gps.speed_ms', time, 3000);
+
+/** The hardest push on the car from `from` to `to` in g, along and across it together; null where the recording does not tell. */
+function mostPush(recording, from = -Infinity, to = Infinity) {
+  const ahead = recording.series('drift.ahead_ms2');
+  let most = null;
+  for (let index = 0; index < ahead.times.length; index += 1) {
+    const time = ahead.times[index];
+    if (time < from) continue;
+    if (time > to) break;
+    const right = recording.value('drift.right_ms2', time, 0);
+    if (!Number.isFinite(right) || !Number.isFinite(ahead.values[index])) continue;
+    most = Math.max(most ?? 0, Math.hypot(ahead.values[index], right) / G);
+  }
+  return most;
+}
 
 /**
  * The drifts of a recording in order of time: `[{ from, to, peak, side,
- * speedKmh, slipPct }]`. `peak` is the largest angle in degrees with its
- * sign (positive: the nose points to the right of the direction of travel),
- * `side` 'R' or 'L' the same in a letter, `speedKmh` the mean speed over
- * ground, and `slipPct` the most the wheels ran ahead of the ground during
- * it, or null when the recording does not tell.
+ * speedKmh, slipPct, gripG }]`. `peak` is the largest angle in degrees with
+ * its sign (positive: the nose points to the right of the direction of
+ * travel), `side` 'R' or 'L' the same in a letter, `speedKmh` the mean speed
+ * over ground, `slipPct` the most the wheels ran ahead of the ground during
+ * it and `gripG` the hardest push on the car in g, each null when the
+ * recording does not tell.
  */
 export function findDrifts(recording) {
   const { times, values } = recording.series('drift.drift_angle_deg');
@@ -73,7 +91,7 @@ export function findDrifts(recording) {
         if (time < from || time > to + WHEEL_LAG_MS) continue;
         if (slipPct === null || slip.values[index] > slipPct) slipPct = slip.values[index];
       }
-      return { from, to, peak, side: peak > 0 ? 'R' : 'L', speedKmh: (speed / count) * 3.6, slipPct };
+      return { from, to, peak, side: peak > 0 ? 'R' : 'L', speedKmh: (speed / count) * 3.6, slipPct, gripG: mostPush(recording, from, to) };
     });
 }
 
@@ -86,7 +104,8 @@ export function findDrifts(recording) {
  * - `distanceM`: distance over ground from GPS speed;
  * - `topSpeedKmh` over ground, `topWheelKmh` as the car read it, `topRpm`, `topCoolantC`;
  * - `drifts` (their number), `driftMs` in all, `longestMs`, `bestAngle` with its sign, `driftSpeedKmh` on average;
- * - `spinMs`: time the wheels turned faster than the car moved, and `topSlipPct`.
+ * - `spinMs`: time the wheels turned faster than the car moved, and `topSlipPct`;
+ * - `topGrip`: the hardest push on the car in g.
  */
 export function summarize(recording, drifts = [], wheelSpans = []) {
   const highest = new Map(recording.signals.map(({ id, max }) => [id, max]));
@@ -118,5 +137,6 @@ export function summarize(recording, drifts = [], wheelSpans = []) {
     driftSpeedKmh: driftMs ? drifts.reduce((sum, drift) => sum + drift.speedKmh * (drift.to - drift.from), 0) / driftMs : null,
     spinMs: spins.reduce((sum, span) => sum + (span.to - span.from), 0),
     topSlipPct: spins.reduce((most, span) => (most === null || span.peak > most ? span.peak : most), null),
+    topGrip: mostPush(recording),
   };
 }

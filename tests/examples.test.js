@@ -120,6 +120,11 @@ for (const [file, least] of [
     const first = calibrated.indexOf(1);
     assert.ok(first > 0 && calibrated.subarray(first).every((value) => value === 1));
     assert.ok(recording.has('engine.power_hp'));
+    // The push on the car, from the accelerometer turned into the car: what a road car on road tyres can do,
+    // known for most of the drifts.
+    assert.ok(totals.topGrip > 0.4 && totals.topGrip < 1, `most grip ${totals.topGrip}`);
+    assert.ok(drifts.filter((drift) => drift.gripG !== null).length >= drifts.length * 0.8, 'acceleration known in the drifts');
+    assert.ok(drifts.every((drift) => drift.gripG === null || (drift.gripG > 0.15 && drift.gripG < 1)));
     // Picked from the list it opens a second before the wheels first spin or the car first slides, keeps every
     // drift and leaves out a good part of the waiting around.
     const [from, to] = shownOf(file, replay);

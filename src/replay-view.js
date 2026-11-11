@@ -6,6 +6,7 @@ import { backendCsv } from './backend-export.js';
 import { SignalChart, chartRanges } from './chart.js';
 import { driftTable } from './drift-replay.js';
 import { powerTable } from './engine.js';
+import { GripChart, TAIL_MS, gripPoints, hasGrip } from './grip-chart.js';
 import { Recording, parseCsv, skipGap, streamOf } from './replay.js';
 import { findDrifts, summarize } from './summary.js';
 import { trackOf } from './track.js';
@@ -87,6 +88,8 @@ export class ReplayView {
   #dragging = false;
   #shown = new Map(); // element id -> the text it shows
   #examples = new Map(); // file name -> what the list of examples says about it
+  #grip = new GripChart(); // the g-g diagram
+  #gripShown = false; // whether the recording knows the acceleration of the car
 
   /**
    * `$` finds an element by its id and `map` is the TrackMap of this view.
@@ -106,6 +109,11 @@ export class ReplayView {
     if (windowMs !== null && WINDOWS.some(([value]) => value === Number(windowMs))) this.#windowMs = Number(windowMs);
     this.#fill($('replay-speed'), SPEEDS.map((value) => [value, `×${value}`]), this.#speed);
     this.#fill($('replay-window'), WINDOWS, this.#windowMs);
+    $('replay-grip-chart').append(this.#grip.element);
+    // A closed diagram is drawn again when it is opened, with the dots of the stretch the charts show.
+    $('replay-grip').addEventListener('toggle', () => {
+      this.#page = null;
+    });
 
     $('replay-log').addEventListener('click', () => this.openLog());
     $('replay-backend').addEventListener('click', () => this.#saveForBackend());
@@ -275,6 +283,7 @@ export class ReplayView {
     this.#page = null;
     if (recording.empty) {
       this.#recording = null;
+      this.#gripShown = false;
       $('replay-body').hidden = true;
       this.#text('replay-info', `${source}: nothing to replay.${trouble}`);
       return;
@@ -313,6 +322,8 @@ export class ReplayView {
     const drifts = findDrifts(recording);
     this.#listDrifts(drifts);
     this.#listTotals(summarize(recording, drifts, this.#marks));
+    this.#gripShown = hasGrip(recording);
+    $('replay-grip').hidden = !this.#gripShown;
     $('replay-body').hidden = false;
     $('replay-map').hidden = this.#positions === null;
   }
@@ -337,7 +348,11 @@ export class ReplayView {
           cell('span', clock(drift.from)),
           cell('span', `${((drift.to - drift.from) / 1000).toFixed(1)} s`),
           cell('strong', `${Math.round(Math.abs(drift.peak))}° ${drift.side}`),
-          cell('span', `${Math.round(drift.speedKmh)} km/h${spun ? `, wheels +${Math.round(drift.slipPct)}%` : ''}`, spun ? 'spun' : ''),
+          cell(
+            'span',
+            `${Math.round(drift.speedKmh)} km/h${drift.gripG !== null ? `, ${drift.gripG.toFixed(2)} g` : ''}${spun ? `, wheels +${Math.round(drift.slipPct)}%` : ''}`,
+            spun ? 'spun' : '',
+          ),
         );
         button.addEventListener('click', () => this.#moveTo(drift.from - LEAD_IN_MS));
         return button;
@@ -362,6 +377,7 @@ export class ReplayView {
         add('Speed while drifting', `${Math.round(totals.driftSpeedKmh)} km/h on average`);
       }
     }
+    if (totals.topGrip !== null) add('Most grip used', `${totals.topGrip.toFixed(2)} g`);
     if (totals.topSlipPct !== null) add('Wheelspin', `${(totals.spinMs / 1000).toFixed(1)} s in all, up to +${Math.round(totals.topSlipPct)}%`);
     this.#$('replay-summary-list').replaceChildren(
       ...rows.map(([name, value]) => {
@@ -593,6 +609,11 @@ export class ReplayView {
     if (recording) this.#render();
   }
 
+  /** Whether the g-g diagram is drawn: the recording has what it needs and the diagram is not folded away. */
+  #gripOpen() {
+    return this.#gripShown && this.#$('replay-grip').open;
+  }
+
   #render() {
     const recording = this.#recording;
     const time = this.#cursor;
@@ -616,8 +637,14 @@ export class ReplayView {
         this.#charts[at].draw(lines, from, from + length, this.#breaks, this.#marks);
       });
       this.#text('replay-range', `${clock(from)} to ${clock(Math.min(from + length, end))}`);
+      if (this.#gripOpen()) this.#grip.draw(gripPoints(recording, from, from + length));
     }
     this.#panels.forEach((ids, at) => this.#charts[at].cursor(time, ids.map((id) => recording.value(id, time))));
+    if (this.#gripOpen()) {
+      const tail = gripPoints(recording, time - TAIL_MS, time);
+      const newest = tail.at(-1);
+      this.#grip.cursor(newest && time - newest.time <= DRIFT_HOLD_MS ? newest : null, tail);
+    }
 
     const seek = this.#$('replay-seek');
     const place = String(Math.round(((time - start) / (end - start || 1)) * Number(seek.max)));

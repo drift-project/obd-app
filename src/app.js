@@ -23,7 +23,7 @@ import { watchUpdates } from './update.js';
 import { WheelWatch } from './wheels.js';
 import { zip } from './zip.js';
 
-const APP_VERSION = '0.9.4';
+const APP_VERSION = '0.10.0';
 const RPM_MAX = 8000;
 const REDLINE = 0.85;
 const FLUSH_MS = 1000; // a killed page loses at most about this much of the log
@@ -269,6 +269,8 @@ function logDrift() {
     drift.corrected ? 1 : 0,
     drift.aided ? 1 : 0,
     drift.gpsDelay,
+    drift.ahead,
+    drift.right,
   ]);
 }
 

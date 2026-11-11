@@ -85,13 +85,16 @@ export const DRIFT_STREAM = {
     'corrected',
     'aided',
     'gps_delay_ms',
+    'ahead_ms2',
+    'right_ms2',
   ],
-  digits: [1, 1, 1, 1, 2, 7, 7, 1, 0, 0, 0, 0],
+  digits: [1, 1, 1, 1, 2, 7, 7, 1, 0, 0, 0, 0, 2, 2],
   about:
     'what the drift view showed: heading of the car, course over ground and their difference, the rate of turn ' +
     '(positive to the right), speed and position carried on between fixes, the heading correction taken from GPS, ' +
     'whether the heading was set at all, whether the newest fix corrected it (the car was driving straight), ' +
-    'whether the accelerometer was used between fixes and the delay of the GPS fixes it was lined up with',
+    'whether the accelerometer was used between fixes, the delay of the GPS fixes it was lined up with, and the ' +
+    'acceleration of the car along where it points (negative when braking) and across it (positive towards its right side)',
 };
 
 const HISTORY_MS = 5000;
@@ -132,6 +135,8 @@ const UP_SETTLE_S = 3;
 const STEADY_MS = 1500; // how long a fix that shows steady driving counts
 const STEADY_SPEED_MS = 0.4; // change of speed between fixes, m/s
 const STEADY_TURN = 3; // deg/s
+// The acceleration of the car is averaged over this long: the engine and the road shake the phone faster.
+const ACCEL_SPAN_MS = 250;
 
 export class DriftEstimator {
   #last = null; // newest attitude quaternion
@@ -526,13 +531,36 @@ export class DriftEstimator {
   }
 
   /**
+   * Acceleration of the car at `time` in m/s², averaged over the time just before: `ahead` along where the car
+   * points (negative when it brakes) and `right` across it (positive towards its right side, as in a right
+   * turn). In a drift the car points away from where it goes, so the push that bends its path shows partly
+   * ahead. Null until the accelerometer is lined up with the map and the heading is known.
+   */
+  #carAcceleration(time, heading) {
+    if (!this.#aided || heading === null) return null;
+    const now = this.#between(this.#sums, time, 50);
+    const then = this.#between(this.#sums, time - ACCEL_SPAN_MS);
+    if (!now || !then) return null;
+    const seconds = (now[0] - then[0]) / 1000;
+    if (!(seconds > 0)) return null;
+    const x = (now[1] - then[1]) / seconds;
+    const y = (now[2] - then[2]) / seconds;
+    const east = Math.cos(this.#angle) * x - Math.sin(this.#angle) * y;
+    const north = Math.sin(this.#angle) * x + Math.cos(this.#angle) * y;
+    const sin = Math.sin(heading / DEGREES);
+    const cos = Math.cos(heading / DEGREES);
+    return { ahead: east * sin + north * cos, right: east * cos - north * sin };
+  }
+
+  /**
    * What is known at `time`: heading and course in degrees clockwise from
    * north and their difference, the rate of turn in deg/s (positive to the
    * right), speed in m/s and position, the heading correction, whether the
    * heading was ever set, whether the newest fix corrected it, whether the
    * accelerometer carries the velocity between fixes, the delay of the
-   * fixes in ms and whether the phone was handled and the heading has not
-   * been set again since. Unknown values are null.
+   * fixes in ms, whether the phone was handled and the heading has not
+   * been set again since, and the acceleration of the car along and across
+   * where it points in m/s² (see #carAcceleration). Unknown values are null.
    */
   at(time) {
     const yaw = this.#yawAt(time);
@@ -555,6 +583,7 @@ export class DriftEstimator {
         position = offsetBy(position, meters * Math.sin(course / DEGREES), meters * Math.cos(course / DEGREES));
       }
     }
+    const acceleration = this.#carAcceleration(time, heading);
     return {
       heading,
       course,
@@ -568,6 +597,8 @@ export class DriftEstimator {
       aided: carried !== null,
       gpsDelay: this.#aided ? this.#delay : null,
       moved: this.#moved,
+      ahead: acceleration?.ahead ?? null,
+      right: acceleration?.right ?? null,
     };
   }
 }

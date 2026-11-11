@@ -34,6 +34,76 @@ function mostPush(recording, from = -Infinity, to = Infinity) {
 }
 
 /**
+ * Finds drifts as the rows of the drift stream come, so that each can be told the moment it is over; the
+ * replay finds them with the same rules from the recording. `add(time, angle, speed)` takes a row in order
+ * of time (the drift angle in degrees, the speed over ground in m/s or null), `tick(time)` says that time
+ * went on without a known angle and `finish()` that nothing more comes. `onDrift({ from, to, peak, side,
+ * speedKmh })` gets each drift once it can no longer grow: when the angle has stayed down for longer than
+ * two stretches may lie apart and still be one drift, or the next stretch went to the other side.
+ */
+export class DriftTracker {
+  #open = null; // the stretch at an angle going on: { from, to, peak, speed, count }
+  #held = null; // the one before, which the next stretch to the same side may still join
+
+  constructor(onDrift) {
+    this.onDrift = onDrift;
+  }
+
+  add(time, angle, speed) {
+    const fast = speed !== null && speed >= MIN_SPEED_MS;
+    const open = this.#open;
+    if (open && (time - open.to > GAP_MS || !fast || Math.abs(angle) < END_DEG || Math.sign(angle) !== Math.sign(open.peak))) this.#close();
+    if (!this.#open) {
+      this.tick(time);
+      if (!fast || Math.abs(angle) < START_DEG) return;
+      // A stretch to the other side cannot join the one before: that one is over.
+      if (this.#held && Math.sign(angle) !== Math.sign(this.#held.peak)) this.#release();
+      this.#open = { from: time, to: time, peak: angle, speed: 0, count: 0 };
+    }
+    const current = this.#open;
+    current.to = time;
+    current.speed += speed;
+    current.count += 1;
+    if (Math.abs(angle) > Math.abs(current.peak)) current.peak = angle;
+  }
+
+  tick(time) {
+    // A longer silence of the angle ends the stretch, as the next known angle would.
+    if (this.#open && time - this.#open.to > GAP_MS) this.#close();
+    if (!this.#open && this.#held && time - this.#held.to > JOIN_MS) this.#release();
+  }
+
+  finish() {
+    this.#close();
+    this.#release();
+  }
+
+  /** The stretch at an angle has ended. The angle dipping for a moment does not make two drifts of one. */
+  #close() {
+    const open = this.#open;
+    this.#open = null;
+    if (!open) return;
+    const held = this.#held;
+    if (held && open.from - held.to <= JOIN_MS && Math.sign(open.peak) === Math.sign(held.peak)) {
+      held.to = open.to;
+      held.speed += open.speed;
+      held.count += open.count;
+      if (Math.abs(open.peak) > Math.abs(held.peak)) held.peak = open.peak;
+      return;
+    }
+    this.#release();
+    this.#held = open;
+  }
+
+  #release() {
+    const held = this.#held;
+    this.#held = null;
+    if (!held || held.to - held.from < MIN_MS) return;
+    this.onDrift({ from: held.from, to: held.to, peak: held.peak, side: held.peak > 0 ? 'R' : 'L', speedKmh: (held.speed / held.count) * 3.6 });
+  }
+}
+
+/**
  * The drifts of a recording in order of time: `[{ from, to, peak, side,
  * speedKmh, slipPct, gripG }]`. `peak` is the largest angle in degrees with
  * its sign (positive: the nose points to the right of the direction of
@@ -45,54 +115,20 @@ function mostPush(recording, from = -Infinity, to = Infinity) {
 export function findDrifts(recording) {
   const { times, values } = recording.series('drift.drift_angle_deg');
   const found = [];
-  let open = null;
-  const close = () => {
-    if (open) found.push(open);
-    open = null;
-  };
-  for (let index = 0; index < times.length; index += 1) {
-    const time = times[index];
-    const angle = values[index];
-    const speed = speedAt(recording, time);
-    const fast = speed !== null && speed >= MIN_SPEED_MS;
-    if (open && (time - open.to > GAP_MS || !fast || Math.abs(angle) < END_DEG || Math.sign(angle) !== Math.sign(open.peak))) close();
-    if (!open) {
-      if (!fast || Math.abs(angle) < START_DEG) continue;
-      open = { from: time, to: time, peak: angle, speed: 0, count: 0 };
-    }
-    open.to = time;
-    open.speed += speed;
-    open.count += 1;
-    if (Math.abs(angle) > Math.abs(open.peak)) open.peak = angle;
-  }
-  close();
-
-  // The angle dipping for a moment does not make two drifts of one.
-  const joined = [];
-  for (const drift of found) {
-    const last = joined.at(-1);
-    if (last && drift.from - last.to <= JOIN_MS && Math.sign(drift.peak) === Math.sign(last.peak)) {
-      last.to = drift.to;
-      last.speed += drift.speed;
-      last.count += drift.count;
-      if (Math.abs(drift.peak) > Math.abs(last.peak)) last.peak = drift.peak;
-    } else {
-      joined.push({ ...drift });
-    }
-  }
+  const tracker = new DriftTracker((drift) => found.push(drift));
+  for (let index = 0; index < times.length; index += 1) tracker.add(times[index], values[index], speedAt(recording, times[index]));
+  tracker.finish();
 
   const slip = recording.series('wheels.slip_pct');
-  return joined
-    .filter((drift) => drift.to - drift.from >= MIN_MS)
-    .map(({ from, to, peak, speed, count }) => {
-      let slipPct = null;
-      for (let index = 0; index < slip.times.length; index += 1) {
-        const time = slip.times[index];
-        if (time < from || time > to + WHEEL_LAG_MS) continue;
-        if (slipPct === null || slip.values[index] > slipPct) slipPct = slip.values[index];
-      }
-      return { from, to, peak, side: peak > 0 ? 'R' : 'L', speedKmh: (speed / count) * 3.6, slipPct, gripG: mostPush(recording, from, to) };
-    });
+  return found.map((drift) => {
+    let slipPct = null;
+    for (let index = 0; index < slip.times.length; index += 1) {
+      const time = slip.times[index];
+      if (time < drift.from || time > drift.to + WHEEL_LAG_MS) continue;
+      if (slipPct === null || slip.values[index] > slipPct) slipPct = slip.values[index];
+    }
+    return { ...drift, slipPct, gripG: mostPush(recording, drift.from, drift.to) };
+  });
 }
 
 /**

@@ -11,7 +11,7 @@ import { test } from 'node:test';
 import { driftTable } from '../src/drift-replay.js';
 import { powerTable } from '../src/engine.js';
 import { Recording, parseCsv, streamOf } from '../src/replay.js';
-import { findDrifts, summarize } from '../src/summary.js';
+import { DriftTracker, findDrifts, summarize } from '../src/summary.js';
 import { BEFORE_DRIFT_MS, trimSpan } from '../src/trim.js';
 import { wheelSlip } from '../src/wheels.js';
 import { unzip } from '../src/zip.js';
@@ -125,6 +125,16 @@ for (const [file, least] of [
     assert.ok(totals.topGrip > 0.4 && totals.topGrip < 1, `most grip ${totals.topGrip}`);
     assert.ok(drifts.filter((drift) => drift.gripG !== null).length >= drifts.length * 0.8, 'acceleration known in the drifts');
     assert.ok(drifts.every((drift) => drift.gripG === null || (drift.gripG > 0.15 && drift.gripG < 1)));
+    // Said aloud during the drive, row by row as the drift view has them, the drifts are those of the list.
+    const told = [];
+    const tracker = new DriftTracker((drift) => told.push(drift));
+    for (const time of recording.series('drift.calibrated').times) {
+      const angle = recording.value('drift.drift_angle_deg', time, 0);
+      if (angle === null) tracker.tick(time);
+      else tracker.add(time, angle, recording.value('drift.speed_ms', time, 1500) ?? recording.value('gps.speed_ms', time, 3000));
+    }
+    tracker.finish();
+    assert.deepEqual(told, drifts.map(({ slipPct, gripG, ...drift }) => drift));
     // Picked from the list it opens a second before the wheels first spin or the car first slides, keeps every
     // drift and leaves out a good part of the waiting around.
     const [from, to] = shownOf(file, replay);

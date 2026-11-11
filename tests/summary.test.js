@@ -6,7 +6,7 @@ import { test } from 'node:test';
 
 import { powerHp, powerTable } from '../src/engine.js';
 import { Recording } from '../src/replay.js';
-import { findDrifts, summarize } from '../src/summary.js';
+import { DriftTracker, findDrifts, summarize } from '../src/summary.js';
 
 const T0 = new Date(2026, 10, 10, 20, 30, 0).getTime();
 const table = (stream, columns, rows) => ({ stream, columns, data: Float64Array.from(rows.flat().map((value) => value ?? NaN)) });
@@ -82,6 +82,59 @@ test('a drift ends where the car slows to walking pace or the angle falls silent
   // The phone was handled from 13 s on: no angle after that.
   const silent = findDrifts(recordingOf({ seconds: 30, angle: (t) => (t >= 10 && t < 13 ? 30 : t >= 13 && t < 20 ? null : 0) }));
   assert.deepEqual(seconds(silent[0]), [10, 12.9]);
+});
+
+/**
+ * Feed the drift stream of `recording` to a DriftTracker row by row, as the drift view does ten times a
+ * second, with `tick` where the angle is not known: `[{ drift, told }]` with the time each drift was told.
+ */
+function live(recording) {
+  const told = [];
+  let now = null;
+  const tracker = new DriftTracker((drift) => told.push({ drift, told: now }));
+  const { times } = recording.series('drift.speed_ms');
+  for (const time of times) {
+    now = time;
+    const angle = recording.value('drift.drift_angle_deg', time, 0);
+    const speed = recording.value('drift.speed_ms', time, 1500) ?? recording.value('gps.speed_ms', time, 3000);
+    if (angle === null) tracker.tick(time);
+    else tracker.add(time, angle, speed);
+  }
+  return told;
+}
+
+test('told as they happen, the drifts are the ones the replay finds, each within 0.8 s of its end', () => {
+  // A drift to the right with a dip that does not split it, a twitch, a drift to the left, one cut short by
+  // slowing down, one at walking pace and one that ends where the angle falls silent.
+  const angle = (t) => {
+    if (t >= 5 && t < 8) return t >= 6 && t < 6.3 ? 2 : 24;
+    if (t >= 10 && t < 10.4) return 30;
+    if (t >= 12 && t < 15) return -18;
+    if (t >= 17 && t < 22) return 27;
+    if (t >= 24 && t < 27) return 35;
+    if (t >= 29 && t < 31) return -31;
+    if (t >= 31 && t < 34) return null;
+    return 1;
+  };
+  const speed = (t) => (t >= 19 && t < 23 ? 1 : t >= 24 && t < 27 ? 3 : 12);
+  const recording = recordingOf({ seconds: 40, angle, speed });
+  const found = findDrifts(recording);
+  const told = live(recording);
+  assert.deepEqual(found.map((drift) => seconds(drift)), [[5, 7.9], [12, 14.9], [17, 18.9], [29, 30.9]]);
+  assert.deepEqual(
+    told.map(({ drift }) => drift),
+    found.map(({ slipPct, gripG, ...drift }) => drift),
+  );
+  for (const { drift, told: at } of told) {
+    assert.ok(at > drift.to && at - drift.to <= 800, `told ${at - drift.to} ms after the end of the drift at ${seconds(drift)[0]} s`);
+  }
+});
+
+test('a drift followed at once by one to the other side is told without waiting', () => {
+  const told = live(recordingOf({ seconds: 30, angle: (t) => (t >= 10 && t < 12 ? -25 : t >= 12 && t < 14.5 ? 22 : 0) }));
+  assert.deepEqual(told.map(({ drift }) => drift.side), ['L', 'R']);
+  // The first is over the moment the car swings to the other side.
+  assert.equal(told[0].told - T0, 12000);
 });
 
 test('the wheels running ahead during a drift are put next to it', () => {

@@ -642,6 +642,34 @@ small {
   display: none;
 }
 
+/* The drift that was said last, next to the switch of the voice. */
+.drift-last {
+  margin: 0;
+  font-size: 0.9375rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.drift-last:empty {
+  display: none;
+}
+
+.drift-voice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.drift-voice input {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  margin: 0;
+  accent-color: var(--blue);
+}
+
 /* Diagnostics view -------------------------------------------------------- */
 
 .diag {

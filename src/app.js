@@ -17,13 +17,15 @@ import { SampleLog } from './samples.js';
 import { PhoneSensors, STREAMS } from './sensors.js';
 import { ELM327Simulator, LoopbackTransport } from './simulator.js';
 import { RowStore, SampleStore } from './storage.js';
+import { DriftTracker } from './summary.js';
 import { Trace } from './trace.js';
 import { WebSerialTransport, pickPort } from './transports.js';
 import { watchUpdates } from './update.js';
+import { driftWords, say, voiceLanguage, voiceOnWords } from './voice.js';
 import { WheelWatch } from './wheels.js';
 import { zip } from './zip.js';
 
-const APP_VERSION = '0.10.0';
+const APP_VERSION = '0.10.1';
 const RPM_MAX = 8000;
 const REDLINE = 0.85;
 const FLUSH_MS = 1000; // a killed page loses at most about this much of the log
@@ -40,6 +42,9 @@ const SESSIONS_KEY = 'drifthing-obd-sessions'; // which version recorded which p
 const MAX_SESSIONS = 60;
 const WHEEL_FACTOR_KEY = 'drifthing-obd-wheel-factor'; // car speed over GPS speed with gripping wheels, from the last drive
 const ALARM_KEY = 'drifthing-obd-alarm'; // coolant limit and whether the phone may make a noise, as JSON
+const VOICE_KEY = 'drifthing-obd-voice'; // '0' when each drift is not to be said aloud
+const VOICE = voiceLanguage(navigator.language);
+const VOICE_SPEED_HOLD_MS = 1500; // as long as the replay holds the speed of the drift view when it looks for drifts
 const ALARM_OFF_BELOW = 3; // degrees the coolant has to cool below the limit before the alarm goes
 const ALARM_REPEAT_MS = 8000;
 const ZOOM_KEY = 'drifthing-obd-map-zoom';
@@ -132,6 +137,9 @@ const state = {
   audio: null, // made on the first tap that starts a session: a page may only make a noise after one
   touched: false, // whether the page was used since it was loaded
   update: null, // a new release of the app waiting to take over, see watchUpdates
+  // Each drift said aloud once it is over: the tracker of the running session, the last speed it was given and
+  // the last drift, which the drift view shows.
+  voice: { on: true, tracker: null, speed: null, speedAt: -Infinity, last: null },
 };
 
 const activeRows = () => (state.mode === 'demo' ? state.demoRows : state.rows);
@@ -250,11 +258,36 @@ function onSample(name, values) {
   feedDrift(name, values);
 }
 
-/** Ten times a second: what the drift view shows goes into the log, so it can be checked later. */
+/** A drift is over: say it aloud, and show it in the drift view. */
+function tellDrift(drift) {
+  state.voice.last = drift;
+  if (state.voice.on) say(driftWords(drift, VOICE), VOICE);
+  state.dirty = true;
+}
+
+/** Hand the drift angle to the tracker that tells each drift once it is over, with the speed the replay would use. */
+function hearDrift(now, drift) {
+  const voice = state.voice;
+  if (!voice.tracker) return;
+  if (drift.speed !== null) {
+    voice.speed = drift.speed;
+    voice.speedAt = now;
+  }
+  const speed = now - voice.speedAt <= VOICE_SPEED_HOLD_MS ? voice.speed : null;
+  if (drift.driftAngle === null) voice.tracker.tick(now);
+  else voice.tracker.add(now, drift.driftAngle, speed);
+}
+
+/**
+ * Ten times a second: what the drift view shows goes into the log, so it can be checked later, and a drift
+ * that is over is told. The demo drive is told but not recorded.
+ */
 function logDrift() {
-  if (!state.sensors) return;
+  if (!state.sensors && !state.demoDrive) return;
   const now = state.clock.now();
   const drift = state.drift.at(now);
+  hearDrift(now, drift);
+  if (!state.sensors) return;
   state.samples.add('drift', [
     now,
     drift.heading,
@@ -500,6 +533,20 @@ function saveAlarm() {
   state.dirty = true;
 }
 
+// --- Voice -----------------------------------------------------------------------
+
+function loadVoice() {
+  state.voice.on = readStored(VOICE_KEY) !== '0';
+  $('voice').checked = state.voice.on;
+}
+
+function saveVoice() {
+  state.voice.on = $('voice').checked;
+  writeStored(VOICE_KEY, state.voice.on ? '1' : '0');
+  // Switched on with a tap, which lets the page speak: say so, which also tells how loud it is.
+  if (state.voice.on) say(voiceOnWords(VOICE), VOICE);
+}
+
 /** Three short beeps and a buzz. Quietly does nothing where the browser will not let a page make a noise. */
 function soundAlarm() {
   try {
@@ -670,6 +717,10 @@ function start(mode, makeElm = null) {
   state.battery = new BatteryMonitor();
   state.batteryNoted = '';
   state.wheels = new WheelWatch({ factor: Number(readStored(WHEEL_FACTOR_KEY)) || 1 });
+  state.voice.tracker = new DriftTracker(tellDrift);
+  state.voice.speed = null;
+  state.voice.speedAt = -Infinity;
+  state.voice.last = null;
   state.alarm.on = false;
   state.alarm.value = null;
   try {
@@ -701,6 +752,8 @@ function start(mode, makeElm = null) {
       stopDemoDrive();
       // The scale between the car and GPS belongs to the car: the next drive starts from it.
       if (state.wheels.steady >= 8) writeStored(WHEEL_FACTOR_KEY, state.wheels.factor.toFixed(4));
+      // A drift going on when the session stops is not told any more.
+      state.voice.tracker = null;
       state.alarm.on = false;
       closeSession();
       state.mode = null;
@@ -1223,6 +1276,9 @@ function renderDrift() {
   $('drift-turn').textContent = drift.yawRate === null ? '--' : String(Math.round(drift.yawRate));
   state.map.hint = position ? '' : live ? 'Waiting for a GPS position' : 'No position yet';
   $('drift-note').textContent = driftNote(drift, live, line);
+  const told = state.voice.last;
+  const lastText = told ? `Last drift: ${Math.round(Math.abs(told.peak))}° ${told.side}, ${((told.to - told.from) / 1000).toFixed(1)} s at ${Math.round(told.speedKmh)} km/h` : '';
+  if ($('drift-last').textContent !== lastText) $('drift-last').textContent = lastText;
 }
 
 /** The diagnostic log is redrawn only while it is open and only when it changed. */
@@ -1393,6 +1449,8 @@ async function init() {
   });
   loadAlarm();
   for (const id of ['alarm-coolant', 'alarm-sound']) $(id).addEventListener('change', saveAlarm);
+  loadVoice();
+  $('voice').addEventListener('change', saveVoice);
   $('trace-copy').addEventListener('click', copyReport);
   $('trace-save').addEventListener('click', () => download(reportFile()));
   $('trace-share').addEventListener('click', () => shareFiles([reportFile()]));

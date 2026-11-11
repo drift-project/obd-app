@@ -198,7 +198,7 @@ export class TrackMap {
    * the map change them and `onTileError(layer)` when a piece of the map
    * could not be loaded at all.
    */
-  constructor(view, { zoom = 18, zoom3d = 20, mode = '2d', layer = 'orthophoto', onChange = () => {}, onTileError = () => {} } = {}) {
+  constructor(view, { zoom = 18, zoom3d = 20, mode = '3d', layer = 'orthophoto', onChange = () => {}, onTileError = () => {} } = {}) {
     this.#view = view;
     this.#zoom = clampZoom(zoom, 18);
     this.#zoom3d = clampZoom(zoom3d, 20);

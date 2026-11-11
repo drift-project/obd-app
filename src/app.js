@@ -23,7 +23,7 @@ import { watchUpdates } from './update.js';
 import { WheelWatch } from './wheels.js';
 import { zip } from './zip.js';
 
-const APP_VERSION = '0.9.3';
+const APP_VERSION = '0.9.4';
 const RPM_MAX = 8000;
 const REDLINE = 0.85;
 const FLUSH_MS = 1000; // a killed page loses at most about this much of the log
@@ -48,10 +48,10 @@ const ZOOM3D_KEY = 'drifthing-obd-map-zoom-3d';
 const MAP_MODE_KEY = 'drifthing-obd-map-mode'; // '3d' (behind the car) or '2d' (flat, north up)
 const VIEWS = ['car', 'drift', 'replay', 'diag'];
 const READ_MODES = { all: 'everything', drift: 'for drifting', diag: 'for diagnostics' };
-// The map opens flat with the pictures from the air. This is the second time its defaults were set: a
-// choice stored under the first ones is forgotten once.
+// The map opens in 3D behind the car with the pictures from the air, in the drift view and in the replay.
+// This is the third time its defaults were set: a choice stored under the earlier ones is forgotten once.
 const MAP_DEFAULTS_KEY = 'drifthing-obd-map-defaults';
-const MAP_DEFAULTS = '2';
+const MAP_DEFAULTS = '3';
 const DIAG_OLD_MS = 30000; // a diagnostic value not read again for this long is shown greyed
 const DRIFT_LOG_MS = 100; // the drift stream is written ten times a second
 
@@ -1356,7 +1356,7 @@ async function init() {
   const mapOptions = {
     zoom: Number(readStored(ZOOM_KEY)),
     zoom3d: Number(readStored(ZOOM3D_KEY)),
-    mode: readStored(MAP_MODE_KEY) ?? '2d',
+    mode: readStored(MAP_MODE_KEY) ?? '3d',
     layer: readStored(LAYER_KEY) ?? 'orthophoto',
     onChange: (settings) => {
       writeStored(ZOOM_KEY, String(settings.zoom));

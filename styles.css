@@ -1195,6 +1195,68 @@ summary:focus-visible {
   font: italic 800 1.5rem/1 var(--display);
 }
 
+/* The runs of the log, each with its numbers and its own buttons. */
+.runs {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.runs-title {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font: 600 0.75rem/1 system-ui, sans-serif;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.run-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.run-list li {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+
+.log .run-list p {
+  color: var(--text);
+  font-size: 0.875rem;
+}
+
+.log .run-list strong {
+  color: var(--blue);
+  font: italic 800 1.125rem/1 var(--display);
+}
+
+.log .run-list .run-totals {
+  color: var(--muted);
+}
+
+.run-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.run-actions .button {
+  min-height: 40px;
+  padding: 8px 14px;
+}
+
+.log .runs-note {
+  color: var(--dim);
+  font-size: 0.8125rem;
+}
+
 .tag {
   padding: 3px 7px;
   border-radius: 6px;

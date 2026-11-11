@@ -106,6 +106,26 @@ test('a stream is handed to the replay as one table, stored blocks and new sampl
   assert.equal(log.table('gps').data.length, 12);
 });
 
+test('a part of the log by time: its CSV, its count and its first and last time, across stored blocks', () => {
+  const log = new SampleLog(STREAMS);
+  for (let second = 0; second < 6; second += 1) {
+    log.add('gps', [T0 + second * 1000, T0 + second * 1000 - 300, 52 + second / 1000, 100]);
+    // Half of it stored already, half still waiting: a run can lie across both.
+    if (second === 2) log.take();
+  }
+  assert.equal(log.count('gps'), 6);
+  assert.equal(log.count('gps', T0 + 1500, T0 + 4000), 3);
+  assert.deepEqual(log.range('gps', T0 + 1500, T0 + 4000), [T0 + 2000, T0 + 4000]);
+  assert.deepEqual(log.range('gps'), [T0, T0 + 5000]);
+  const lines = log.csv('gps', T0 + 1500, T0 + 4000).split('\r\n');
+  assert.equal(lines[0], 'timestamp_ms,fix_ms,latitude_deg,altitude_m');
+  assert.deepEqual(lines.slice(1, -1).map((line) => line.split(',')[0]), ['1793916439000.0', '1793916440000.0', '1793916441000.0']);
+  // Nothing in the part: no CSV and no range.
+  assert.equal(log.csv('gps', T0 + 9000, T0 + 9999), null);
+  assert.equal(log.range('gps', T0 + 9000, T0 + 9999), null);
+  assert.equal(log.count('gyroscope', T0, T0 + 9999), 0);
+});
+
 test('clear empties every stream', () => {
   const log = new SampleLog(STREAMS);
   log.add('gyroscope', [T0, 1, 2, 3]);

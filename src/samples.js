@@ -66,8 +66,20 @@ export class SampleLog {
     }
   }
 
-  count(name) {
-    return this.#streams.get(name).samples;
+  /** The blocks of a stream with what has not been packed yet. */
+  #blocksOf(stream) {
+    return stream.pending.length ? [...stream.blocks, stream.pending] : stream.blocks;
+  }
+
+  /** How many samples a stream has, all of them or those timed from `from` to `to`. */
+  count(name, from = -Infinity, to = Infinity) {
+    const stream = this.#streams.get(name);
+    if (from === -Infinity && to === Infinity) return stream.samples;
+    let count = 0;
+    for (const block of this.#blocksOf(stream)) {
+      for (let offset = 0; offset < block.length; offset += stream.width) if (block[offset] >= from && block[offset] <= to) count += 1;
+    }
+    return count;
   }
 
   get total() {
@@ -76,13 +88,26 @@ export class SampleLog {
     return total;
   }
 
-  /** Timestamps of the first and the last sample of a stream, or null when it has none. */
-  range(name) {
+  /** Timestamps of the first and the last sample of a stream, of all or of those from `from` to `to`; null when there are none. */
+  range(name, from = -Infinity, to = Infinity) {
     const stream = this.#streams.get(name);
-    const blocks = stream.pending.length ? [...stream.blocks, stream.pending] : stream.blocks;
+    const blocks = this.#blocksOf(stream);
     if (!blocks.length) return null;
-    const tail = blocks.at(-1);
-    return [blocks[0][0], tail[tail.length - stream.width]];
+    if (from === -Infinity && to === Infinity) {
+      const tail = blocks.at(-1);
+      return [blocks[0][0], tail[tail.length - stream.width]];
+    }
+    let first = null;
+    let last = null;
+    for (const block of blocks) {
+      for (let offset = 0; offset < block.length; offset += stream.width) {
+        const time = block[offset];
+        if (time < from || time > to) continue;
+        first ??= time;
+        last = time;
+      }
+    }
+    return first === null ? null : [first, last];
   }
 
   /** Timestamps of the first and the last sample over all streams, or null when there are none. */
@@ -109,15 +134,15 @@ export class SampleLog {
     return { columns: ['timestamp_ms', ...stream.columns], data };
   }
 
-  /** The stream as CSV text, or null when it has no samples. */
-  csv(name) {
+  /** The stream as CSV text, all of it or the samples timed from `from` to `to`, or null when there are none. */
+  csv(name, from = -Infinity, to = Infinity) {
     const stream = this.#streams.get(name);
     if (!stream.samples) return null;
     const { width, digits } = stream;
     const lines = [`timestamp_ms,${stream.columns.join(',')}`];
-    const blocks = stream.pending.length ? [...stream.blocks, stream.pending] : stream.blocks;
-    for (const block of blocks) {
+    for (const block of this.#blocksOf(stream)) {
       for (let offset = 0; offset < block.length; offset += width) {
+        if (block[offset] < from || block[offset] > to) continue;
         // Timestamps keep a tenth of a millisecond, which is what the browser gives.
         let line = block[offset].toFixed(1);
         for (let i = 1; i < width; i += 1) {
@@ -127,7 +152,7 @@ export class SampleLog {
         lines.push(line);
       }
     }
-    return `${lines.join('\r\n')}\r\n`;
+    return lines.length > 1 ? `${lines.join('\r\n')}\r\n` : null;
   }
 
   clear() {

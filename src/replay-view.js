@@ -4,14 +4,12 @@
 
 import { backendCsv } from './backend-export.js';
 import { SignalChart, chartRanges } from './chart.js';
-import { driftTable } from './drift-replay.js';
-import { powerTable } from './engine.js';
 import { GripChart, TAIL_MS, gripPoints, hasGrip } from './grip-chart.js';
 import { Recording, parseCsv, skipGap, streamOf } from './replay.js';
+import { workOut } from './runs.js';
 import { findDrifts, summarize } from './summary.js';
 import { trackOf } from './track.js';
 import { trimSpan, trimTables } from './trim.js';
-import { wheelSlip } from './wheels.js';
 import { unzip } from './zip.js';
 
 const SPEEDS = [0.25, 0.5, 1, 2, 4, 8, 16];
@@ -215,9 +213,9 @@ export class ReplayView {
 
   // Loading ---------------------------------------------------------------------
 
-  /** Replay what the app has in its log right now. */
-  openLog() {
-    this.#open(this.#logTables(), 'The log in this app');
+  /** Replay what the app has in its log right now: all of it, or the part `span` ([from, to]) that `shown` describes. */
+  openLog({ span = null, shown = '' } = {}) {
+    this.#open(this.#logTables(), 'The log in this app', [], { span, shown });
   }
 
   /** Replay files saved or shared from the app: CSV files, or the ZIP archive that holds them. */
@@ -248,27 +246,23 @@ export class ReplayView {
     this.#open(tables, files.length === 1 ? files[0].name : `${files.length} files`, problems, { trim });
   }
 
-  #open(tables, source, problems = [], { trim = null } = {}) {
+  /**
+   * `trim` picks the part worth showing (see trimSpan), or `span` ([from, to]) is the part to show, which
+   * `shown` describes for the line under the buttons.
+   */
+  #open(tables, source, problems = [], { trim = null, span = null, shown = '' } = {}) {
     const $ = this.#$;
-    const recorded = new Recording(tables);
-    let all = tables;
     // The drift angle is worked out again from the recorded sensors, so an old log is not stuck with what its
-    // version made of them. What the drive itself showed stays in the recording under another name.
-    const again = recorded.empty ? null : driftTable(recorded);
-    if (again) all = [...all.map((table) => (table.stream === 'drift' ? { ...table, stream: 'drift_recorded' } : table)), { stream: 'drift', ...again }];
-    // The speed of the wheels against the speed over ground: its own signals, and bands on every chart.
-    const wheels = recorded.empty ? null : wheelSlip(recorded);
-    if (wheels) all = [...all, { stream: 'wheels', columns: wheels.columns, data: wheels.data }];
-    const power = recorded.empty ? null : powerTable(recorded);
-    if (power) all = [...all, { stream: 'engine', ...power }];
-    const whole = all === tables ? recorded : new Recording(all);
+    // version made of them (what the drive showed stays under another name), the wheels are set against the
+    // ground (their own signals, and bands on every chart) and the power of the engine is estimated.
+    const { all, again, wheels, whole } = workOut(tables);
     let recording = whole;
     let trimmed = '';
-    if (trim && !recording.empty) {
+    if ((trim || span) && !recording.empty) {
       // Everything above was worked out on the whole recording; only the part worth showing is shown.
-      const [from, to] = trimSpan(recording, trim, findDrifts(recording), wheels?.spans ?? []);
+      const [from, to] = span ?? trimSpan(recording, trim, findDrifts(recording), wheels?.spans ?? []);
       if (from > recording.start || to < recording.end) {
-        const why = trim === 'drifts' ? 'from a second before the wheels first spin or the car first slides' : 'while the car moves';
+        const why = span ? shown : trim === 'drifts' ? 'from a second before the wheels first spin or the car first slides' : 'while the car moves';
         trimmed = ` Recorded ${clock(recording.start)} to ${clock(recording.end)}, shown ${why}.`;
         recording = new Recording(trimTables(all, from, to));
         if (wheels) wheels.spans = wheels.spans.filter((span) => span.to >= from && span.from <= to);

@@ -13,6 +13,7 @@ import { TrackMap } from './map.js';
 import { DIAG_FIELDS, FIELDS } from './pids.js';
 import { pidList, run } from './poller.js';
 import { ReplayView } from './replay-view.js';
+import { findRuns } from './runs.js';
 import { SampleLog } from './samples.js';
 import { PhoneSensors, STREAMS } from './sensors.js';
 import { ELM327Simulator, LoopbackTransport } from './simulator.js';
@@ -25,7 +26,7 @@ import { driftWords, say, voiceLanguage, voiceOnWords } from './voice.js';
 import { WheelWatch } from './wheels.js';
 import { zip } from './zip.js';
 
-const APP_VERSION = '0.10.1';
+const APP_VERSION = '0.10.2';
 const RPM_MAX = 8000;
 const REDLINE = 0.85;
 const FLUSH_MS = 1000; // a killed page loses at most about this much of the log
@@ -140,6 +141,9 @@ const state = {
   // Each drift said aloud once it is over: the tracker of the running session, the last speed it was given and
   // the last drift, which the drift view shows.
   voice: { on: true, tracker: null, speed: null, speedAt: -Infinity, last: null },
+  // The log cut into runs (see findRuns), worked out again when it grows, and what each run holds once the
+  // worker has gone through it, by run.
+  runs: { list: [], key: '', shown: '', totals: new Map(), worker: null, asking: false, broken: false },
 };
 
 const activeRows = () => (state.mode === 'demo' ? state.demoRows : state.rows);
@@ -863,17 +867,32 @@ const canShare = (...files) => Boolean(navigator.canShare?.({ files }));
 
 const phoneSamples = () => (state.mode === 'demo' ? 0 : state.samples.total);
 
-/** Describes the files of a log for whoever opens them later. */
-function logInfo(stamp, rows) {
+/**
+ * Describes the files of a log for whoever opens them later: `rows` car rows, and of the phone streams the
+ * samples from `span[0]` to `span[1]` (all of them without a span), which is `part` of the log.
+ */
+function logInfo(stamp, rows, span = null, part = '') {
+  const [from, to] = span ?? [-Infinity, Infinity];
   const lines = [
     `DRIFThing OBD ${APP_VERSION} log, written ${stamp.toString()}`,
     `Browser: ${navigator.userAgent}`,
     '',
+  ];
+  if (span) {
+    const whole = state.samples.span();
+    lines.push(
+      `This archive holds ${part} of the log, ${clockTime(new Date(from))} to ${clockTime(new Date(to))}` +
+        `${whole ? `; the log ran from ${clockTime(new Date(whole[0]))} to ${clockTime(new Date(whole[1]))}` : ''}.`,
+      'A run is cut where the car stood for 45 seconds or the recording stopped.',
+      '',
+    );
+  }
+  lines.push(
     'Every file has timestamp_ms in its first column: milliseconds since 1970-01-01 UTC. The phone clock is read',
     'once when a recording starts and a steady clock counts from there, so all files of a recording share one time line.',
     '',
     'Files:',
-  ];
+  );
   if (rows) {
     lines.push(
       `obd_data: ${rows} rows from the car over OBD2. Where the car gives one value per request (K-line), every value`,
@@ -882,9 +901,9 @@ function logInfo(stamp, rows) {
     );
   }
   for (const stream of LOG_STREAMS) {
-    const samples = state.samples.count(stream.name);
+    const samples = state.samples.count(stream.name, from, to);
     if (!samples) continue;
-    const [first, last] = state.samples.range(stream.name);
+    const [first, last] = state.samples.range(stream.name, from, to);
     lines.push(
       `phone_${stream.name}: ${samples} samples, ${clockTime(new Date(first))} to ${clockTime(new Date(last))}. ` +
         `${stream.about}. Columns: timestamp_ms, ${stream.columns.join(', ')}.`,
@@ -896,8 +915,9 @@ function logInfo(stamp, rows) {
     'Chrome gives a web page at most 60 readings a second from the motion sensors and 10 from the magnetometer.',
   );
   noteSession();
-  if (state.sessions.length) {
-    lines.push('', 'Recording sessions in this log, each with the version of the app that recorded it:', ...state.sessions.map(sessionText));
+  const sessions = state.sessions.filter((session) => session.started <= to && (session.ended ?? Infinity) >= from);
+  if (sessions.length) {
+    lines.push('', 'Recording sessions in this log, each with the version of the app that recorded it:', ...sessions.map(sessionText));
   } else {
     lines.push('', 'Which version recorded this log was not written down (before 0.6.2 it was not); the first line names the version that saved it.');
   }
@@ -908,18 +928,23 @@ function logInfo(stamp, rows) {
   return `${lines.join('\r\n')}\r\n`;
 }
 
-/** Everything in the log as named pieces of text: the car CSV, one CSV per phone sensor and a description. */
-function logEntries(stamp) {
+/**
+ * Everything in the log as named pieces of text: the car CSV, one CSV per phone sensor and a description.
+ * With `span` ([from, to]) only that `part` of the log, in files named after its start.
+ */
+function logEntries(stamp, span = null, part = '') {
   const entries = [];
-  const rows = activeRows();
+  const [from, to] = span ?? [-Infinity, Infinity];
+  const rows = span ? activeRows().filter((row) => row[0] >= from && row[0] <= to) : activeRows();
+  const named = span ? new Date(from) : stamp;
   const demo = state.mode === 'demo';
-  if (rows.length) entries.push({ name: fileName(stamp, demo ? 'obd_demo' : 'obd_data'), type: 'text/csv', data: toCsv(rows) });
+  if (rows.length) entries.push({ name: fileName(named, demo ? 'obd_demo' : 'obd_data'), type: 'text/csv', data: toCsv(rows) });
   if (phoneSamples()) {
     for (const { name } of LOG_STREAMS) {
-      const data = state.samples.csv(name);
-      if (data) entries.push({ name: fileName(stamp, `phone_${name}`), type: 'text/csv', data });
+      const data = state.samples.csv(name, from, to);
+      if (data) entries.push({ name: fileName(named, `phone_${name}`), type: 'text/csv', data });
     }
-    entries.push({ name: fileName(stamp, 'log_info', 'txt'), type: 'text/plain', data: logInfo(stamp, rows.length) });
+    entries.push({ name: fileName(named, 'log_info', 'txt'), type: 'text/plain', data: logInfo(stamp, rows.length, span, part) });
   }
   return entries;
 }
@@ -1002,6 +1027,174 @@ async function share() {
     return;
   }
   if (await shareFiles(files)) markSaved();
+}
+
+// --- Runs ------------------------------------------------------------------------
+
+/** Speed over ground through the log, to cut it into runs: GPS where the phone recorded it, else the car's own. */
+function speedTrack() {
+  const gps = state.samples.table('gps');
+  if (gps) {
+    const width = gps.columns.length;
+    const column = gps.columns.indexOf('speed_ms');
+    const rows = gps.data.length / width;
+    const times = new Float64Array(rows);
+    const speeds = new Float64Array(rows);
+    for (let row = 0; row < rows; row += 1) {
+      times[row] = gps.data[row * width];
+      speeds[row] = gps.data[row * width + column];
+    }
+    return [times, speeds];
+  }
+  const times = [];
+  const speeds = [];
+  for (const row of state.rows) {
+    if (typeof row[SPEED_COLUMN] !== 'number') continue;
+    times.push(row[0]);
+    speeds.push(row[SPEED_COLUMN] / 3.6);
+  }
+  return [times, speeds];
+}
+
+const runKey = ({ from, to }) => `${from}:${to}`;
+const runName = (index) => `run ${index + 1} of ${state.runs.list.length}`;
+const duration = (ms) => `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}`;
+
+/**
+ * Work out the drifts and totals of the runs that do not have them yet, in a worker so that a long log does
+ * not hold the page up. Not while recording: then the log keeps growing, and the phone has other work.
+ */
+function askRunTotals() {
+  const runs = state.runs;
+  if (state.controller || runs.asking || runs.broken) return;
+  const missing = runs.list.filter((run) => !runs.totals.has(runKey(run)));
+  if (!missing.length) return;
+  if (!runs.worker) {
+    try {
+      runs.worker = new Worker(new URL('./runs-worker.js', import.meta.url), { type: 'module' });
+    } catch {
+      runs.broken = true;
+      return;
+    }
+    runs.worker.addEventListener('message', ({ data }) => {
+      runs.asking = false;
+      if (data.error) runs.broken = true;
+      else data.runs.forEach((run, index) => runs.totals.set(runKey(run), data.totals[index]));
+      state.dirty = true;
+    });
+    runs.worker.addEventListener('error', () => {
+      runs.asking = false;
+      runs.broken = true;
+      state.dirty = true;
+    });
+  }
+  const tables = logTables();
+  runs.asking = true;
+  runs.worker.postMessage({ tables, runs: missing }, tables.map(({ data }) => data.buffer));
+}
+
+/** The two lines of a run in the list: when, how long, how far and how fast, then its drifts once known. */
+function runLines(run, index, recording) {
+  const going = recording && run.open;
+  const distance = run.distanceM >= 1000 ? `${(run.distanceM / 1000).toFixed(2)} km` : `${Math.round(run.distanceM)} m`;
+  const head = `${clockTime(new Date(run.from))} · ${going ? 'going on' : duration(run.to - run.from)} · ${distance} · up to ${Math.round(run.topKmh)} km/h`;
+  const totals = state.runs.totals.get(runKey(run));
+  let more = '';
+  if (totals) {
+    const parts = [];
+    if (totals.drifts !== null) parts.push(totals.drifts === 0 ? 'no drifts' : totals.drifts === 1 ? 'one drift' : `${totals.drifts} drifts`);
+    if (totals.drifts && totals.bestAngle !== null) parts.push(`best ${Math.round(Math.abs(totals.bestAngle))}° ${totals.bestAngle > 0 ? 'R' : 'L'}`);
+    if (totals.drifts && totals.longestMs) parts.push(`longest ${(totals.longestMs / 1000).toFixed(1)} s`);
+    if (totals.topGrip !== null) parts.push(`${totals.topGrip.toFixed(2)} g`);
+    if (totals.topSlipPct !== null) parts.push(`wheels up to +${Math.round(totals.topSlipPct)}%`);
+    more = parts.join(', ');
+  } else if (!recording && state.runs.asking) {
+    more = 'Working out the drifts…';
+  }
+  return { title: `Run ${index + 1}`, head, more };
+}
+
+/** The runs of the log under its buttons; drawn again only when something in them changed. */
+function renderRuns() {
+  const runs = state.runs;
+  const key = state.mode === 'demo' ? 'demo' : `${state.samples.count('gps')}:${state.rows.length}`;
+  if (runs.key !== key) {
+    runs.key = key;
+    runs.list = key === 'demo' ? [] : findRuns(...speedTrack());
+  }
+  askRunTotals();
+  const recording = state.controller !== null;
+  const lines = runs.list.map((run, index) => runLines(run, index, recording));
+  const shown = JSON.stringify([lines, $('share').hidden]);
+  if (runs.shown === shown) return;
+  runs.shown = shown;
+  $('runs').hidden = lines.length === 0;
+  $('runs-title').textContent = lines.length === 1 ? 'One run in the log' : `${lines.length} runs in the log`;
+  $('run-list').replaceChildren(
+    ...lines.map(({ title, head, more }, index) => {
+      const item = document.createElement('li');
+      const text = document.createElement('p');
+      const name = document.createElement('strong');
+      name.textContent = title;
+      text.append(name, ` ${head}`);
+      item.append(text);
+      if (more) {
+        const totals = document.createElement('p');
+        totals.className = 'run-totals';
+        totals.textContent = more;
+        item.append(totals);
+      }
+      const actions = document.createElement('div');
+      actions.className = 'run-actions';
+      const button = (label, action) => {
+        const element = document.createElement('button');
+        element.type = 'button';
+        element.className = 'button';
+        element.textContent = label;
+        element.addEventListener('click', () => action(index));
+        actions.append(element);
+      };
+      button('Replay', replayRun);
+      button('Save', saveRun);
+      if (!$('share').hidden) button('Share', shareRun);
+      item.append(actions);
+      return item;
+    }),
+  );
+}
+
+/** Replay one run: the drift angle is worked out on the whole log, as the heading needs the straight before. */
+function replayRun(index) {
+  const run = state.runs.list[index];
+  if (!run) return;
+  showView('replay');
+  state.replay.openLog({ span: [run.from, run.to], shown: `${runName(index)}, from a moment before the car set off to a moment after it stopped` });
+  window.scrollTo(0, 0);
+}
+
+/** One run as a ZIP archive of its own, named after the time it started. */
+async function saveRun(index) {
+  const run = state.runs.list[index];
+  if (!run) return;
+  try {
+    const started = new Date(run.from);
+    const entries = logEntries(new Date(), [run.from, run.to], runName(index));
+    download(new File([await zip(entries, { date: started })], fileName(started, 'drifthing_run', 'zip'), { type: 'application/zip' }));
+  } catch (error) {
+    showNotice(`Saving the run failed: ${error.message}`);
+  }
+}
+
+/** One run to the share sheet, as the files of a log. */
+async function shareRun(index) {
+  const run = state.runs.list[index];
+  if (!run) return;
+  const files = logEntries(new Date(), [run.from, run.to], runName(index)).map(asFile);
+  if (!canShare(...files)) {
+    showNotice('Chrome cannot share this run in one go. Use Save: it packs the run into one ZIP file that can be sent from the Files app.');
+    return;
+  }
+  await shareFiles(files);
 }
 
 function disarmClear() {
@@ -1209,6 +1402,7 @@ function renderLog() {
   $('replay-this').disabled = empty;
   $('clear').disabled = empty;
   if (empty && state.clearTimer) disarmClear();
+  renderRuns();
 }
 
 function renderBattery() {
